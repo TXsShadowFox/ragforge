@@ -48,10 +48,14 @@ services:
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
-      interval: 10s
-      timeout: 10s
-      retries: 12
+      # A plain TCP check of the AMQP port (bash /dev/tcp, like Qdrant below).
+      # Not `rabbitmq-diagnostics`: it runs as root, and on a slow first start it can
+      # create the Erlang cookie file before RabbitMQ does. RabbitMQ then cannot read
+      # the file and stops ("eacces"). It also starts a full Erlang VM on every check.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/5672"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
 
   qdrant:
     image: qdrant/qdrant:v1.19.2
