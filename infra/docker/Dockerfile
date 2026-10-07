@@ -21,12 +21,15 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-install-project
 
 # 2) Our own code, installed as a normal (non-editable) package.
+#    --reinstall-package: uv caches the wheel it builds from our code, and by default it
+#    only rebuilds it when pyproject.toml changes. Without this flag, code changes would
+#    not reach the image.
 COPY pyproject.toml uv.lock README.md ./
 COPY api ./api
 COPY shared ./shared
 COPY worker ./worker
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-dev --no-editable
+    uv sync --locked --no-dev --no-editable --reinstall-package ragforge
 
 # -------------------------------------------------------------- runtime ----
 FROM python:3.12-slim AS runtime
@@ -44,4 +47,5 @@ ENV PATH="/app/.venv/bin:${PATH}" \
 USER ragforge
 EXPOSE 8000
 
-CMD ["uvicorn", "api.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+# --no-access-log: the app writes its own access log line (JSON, with the request ID).
+CMD ["uvicorn", "api.main:create_app_from_env", "--factory", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]

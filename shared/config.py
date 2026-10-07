@@ -8,7 +8,7 @@ stops at startup with a clear error if one is missing.
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import AmqpDsn, PositiveFloat, PostgresDsn, RedisDsn, SecretStr
+from pydantic import AmqpDsn, Field, PositiveFloat, PostgresDsn, RedisDsn, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     s3_secret_key: SecretStr
     s3_bucket: str = "ragforge-documents"
     s3_region: str = "us-east-1"
+
+    # --- Auth ---
+    # Signs the login tokens (JWT). At least 32 characters, as HS256 needs a 32-byte key.
+    jwt_secret: SecretStr = Field(min_length=32)
+    jwt_expire_minutes: int = Field(default=60, ge=1, le=24 * 60)
 
 
 @lru_cache

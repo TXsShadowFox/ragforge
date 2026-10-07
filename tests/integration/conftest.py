@@ -7,10 +7,13 @@ If Docker is not running, these tests are skipped on a laptop but fail in CI.
 
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import pytest
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.community.qdrant import QdrantContainer
 from testcontainers.community.redis import RedisContainer
@@ -18,7 +21,11 @@ from testcontainers.core.container import DockerContainer
 from testcontainers.core.docker_client import DockerClient
 from testcontainers.core.wait_strategies import HttpWaitStrategy, LogMessageWaitStrategy
 
+from api.main import create_app
+from shared.clients.postgres import create_engine
 from shared.config import Settings
+from shared.db.migrate import upgrade
+from shared.db.models import Base
 
 COMPOSE_FILE = Path(__file__).resolve().parents[2] / "docker-compose.yml"
 STARTUP_TIMEOUT_SECONDS = 120
@@ -27,6 +34,7 @@ RABBITMQ_USER = "test"
 RABBITMQ_PASSWORD = "test-password"
 STORAGE_ACCESS_KEY = "test-access"
 STORAGE_SECRET_KEY = "test-secret-key"
+JWT_SECRET = "integration-test-jwt-secret-of-32-chars-or-more"
 
 
 def compose_image(name: str) -> str:
@@ -127,4 +135,50 @@ def live_settings(
         s3_endpoint_url=storage_url,
         s3_access_key=STORAGE_ACCESS_KEY,
         s3_secret_key=STORAGE_SECRET_KEY,
+        jwt_secret=JWT_SECRET,
     )
+
+
+@pytest.fixture(scope="session")
+def db_settings(postgres_url: str) -> Settings:
+    """A real Postgres. The other services get addresses that these tests never use."""
+    return Settings(
+        _env_file=None,
+        app_env="test",
+        database_url=postgres_url,
+        redis_url="redis://localhost:6379/0",
+        rabbitmq_url="amqp://unused:unused@localhost:5672/",
+        qdrant_url="http://localhost:6333",
+        s3_endpoint_url="http://localhost:9000",
+        s3_access_key="unused",
+        s3_secret_key="unused",
+        jwt_secret=JWT_SECRET,
+    )
+
+
+@pytest.fixture(scope="session")
+async def db_engine(db_settings: Settings) -> AsyncIterator[AsyncEngine]:
+    """The test database, migrated to the newest version once per test run."""
+    engine = create_engine(db_settings)
+    await upgrade(engine)
+    yield engine
+    await engine.dispose()
+
+
+@pytest.fixture
+async def api(db_settings: Settings, db_engine: AsyncEngine) -> AsyncIterator[AsyncClient]:
+    """An HTTP client for the app (with its startup hooks), on an empty database."""
+    await empty_all_tables(db_engine)
+    app = create_app(db_settings)
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        yield client
+
+
+async def empty_all_tables(engine: AsyncEngine) -> None:
+    tables = ", ".join(table.name for table in Base.metadata.sorted_tables)
+    async with engine.begin() as connection:
+        # Safe: the table names come from our own models, not from users.
+        await connection.execute(text(f"TRUNCATE {tables} CASCADE"))

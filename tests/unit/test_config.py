@@ -66,3 +66,12 @@ def test_environment_variables_win_over_the_env_file(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("LOG_LEVEL", "DEBUG")
 
     assert Settings(_env_file=ENV_EXAMPLE).log_level == "DEBUG"
+
+
+@pytest.mark.usefixtures("clean_env")
+def test_a_short_jwt_secret_stops_the_app(monkeypatch: pytest.MonkeyPatch) -> None:
+    # HS256 needs a key of at least 32 bytes; a short one is easy to guess.
+    monkeypatch.setenv("JWT_SECRET", "too-short")
+
+    with pytest.raises(ValidationError, match="jwt_secret"):
+        Settings(_env_file=ENV_EXAMPLE)

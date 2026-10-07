@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from shared.clients.postgres import create_engine
+from shared.clients.postgres import create_engine, create_session_factory
 from shared.clients.qdrant import create_qdrant
 from shared.clients.redis import create_redis
 from shared.clients.storage import create_s3_client
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
     from qdrant_client import AsyncQdrantClient
     from redis.asyncio import Redis
-    from sqlalchemy.ext.asyncio import AsyncEngine
+    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 
 @dataclass(slots=True)
@@ -27,6 +27,7 @@ class Clients:
     """One client per service, shared by the whole process."""
 
     db: AsyncEngine
+    sessions: async_sessionmaker[AsyncSession]  # ORM sessions that use `db`
     redis: Redis
     qdrant: AsyncQdrantClient
     s3: S3Client
@@ -34,8 +35,10 @@ class Clients:
     @classmethod
     def create(cls, settings: Settings) -> Clients:
         """Create every client. Nothing connects yet, so this never fails on network errors."""
+        db = create_engine(settings)
         return cls(
-            db=create_engine(settings),
+            db=db,
+            sessions=create_session_factory(db),
             redis=create_redis(settings),
             qdrant=create_qdrant(settings),
             s3=create_s3_client(settings),

@@ -3,9 +3,14 @@
 Tests replace them with `app.dependency_overrides`.
 """
 
-from fastapi import Request
+from collections.abc import AsyncIterator
+from typing import Annotated
+
+from fastapi import Depends, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.readiness import DependencyCheck
+from shared.clients import Clients
 from shared.config import Settings
 
 
@@ -19,3 +24,14 @@ def get_ready_checks(request: Request) -> list[DependencyCheck]:
     """The readiness probes, built at startup (see `api.main.lifespan`)."""
     checks: list[DependencyCheck] = request.app.state.ready_checks
     return checks
+
+
+async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
+    """One database session per request. Routes commit their own changes."""
+    clients: Clients = request.app.state.clients
+    async with clients.sessions() as session:
+        yield session
+
+
+SettingsDep = Annotated[Settings, Depends(get_app_settings)]
+SessionDep = Annotated[AsyncSession, Depends(get_session)]

@@ -14,12 +14,15 @@ Checklist of the phases in [PROJECT_SPEC.md](PROJECT_SPEC.md). Updated after eve
 - [x] All 16 tests pass, including the 2 integration tests on real containers
 - [x] CI is green on GitHub: https://github.com/TXsShadowFox/ragforge/actions
 
-## Phase 1: Tenants, auth, API keys
+## Phase 1: Tenants, auth, API keys (done)
 
-- [ ] Signup and login with JWT; password hashing
-- [ ] API keys (`rf_live_...`): store only the SHA-256 hash, check on each request
-- [ ] Middleware: request ID, tenant context, structured JSON logs
-- [ ] Tests: signup, login, key create/revoke, wrong key returns 401
+- [x] Signup and login with JWT (HS256, 60 min); passwords hashed with argon2id
+- [x] API keys (`rf_live_...`): store only the SHA-256 hash, check on each request
+- [x] Public keys (`rf_pub_...`) with allowed origins, refused until the widget (Phase 5)
+- [x] Middleware: request ID, tenant context, structured JSON logs; one JSON error format
+- [x] Tables `tenants`, `users`, `api_keys` with Alembic migrations (`migrate` container in `make up`)
+- [x] Tests: signup, login, key create/revoke, wrong key returns 401, roles, tenant isolation
+      (87 tests: 61 unit + 26 integration)
 
 ## Phase 2: Upload + ingestion pipeline
 

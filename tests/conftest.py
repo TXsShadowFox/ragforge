@@ -9,6 +9,8 @@ from httpx import ASGITransport, AsyncClient
 from api.main import create_app
 from shared.config import Settings
 
+TEST_JWT_SECRET = "test-jwt-secret-that-is-at-least-32-characters"
+
 
 @pytest.fixture
 def settings() -> Settings:
@@ -23,6 +25,7 @@ def settings() -> Settings:
         s3_endpoint_url="http://localhost:9000",
         s3_access_key="test",
         s3_secret_key="test-secret",
+        jwt_secret=TEST_JWT_SECRET,
     )
 
 
