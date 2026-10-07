@@ -81,3 +81,6 @@ def configure_logging(level: str) -> None:
     access_logger = logging.getLogger("uvicorn.access")
     access_logger.handlers.clear()
     access_logger.propagate = False
+    # httpx (used by the Qdrant client) logs every HTTP request at INFO: too much.
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)

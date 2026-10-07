@@ -40,6 +40,11 @@ jobs:
         with:
           version: ${{ env.UV_VERSION }}
       - run: uv sync --locked
+      # Keep the downloaded embedding model (67 MB) between runs (MODEL_CACHE_DIR).
+      - uses: actions/cache@v6
+        with:
+          path: .cache/models
+          key: models-bge-small-en-v1.5
       # Integration tests start real containers with testcontainers (Docker is preinstalled).
       - run: uv run python -m pytest -v
 

@@ -10,6 +10,7 @@ import re
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
+import aio_pika
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
@@ -22,10 +23,16 @@ from testcontainers.core.docker_client import DockerClient
 from testcontainers.core.wait_strategies import HttpWaitStrategy, LogMessageWaitStrategy
 
 from api.main import create_app
+from shared.clients import Clients
 from shared.clients.postgres import create_engine
 from shared.config import Settings
 from shared.db.migrate import upgrade
 from shared.db.models import Base
+from shared.init import init_stores
+from shared.jobs import DEAD_QUEUE, JOBS_QUEUE, retry_queue
+from shared.vector_store import ensure_collection
+from tests.fakes import FakeEmbedder
+from tests.integration.helpers import running_worker
 
 COMPOSE_FILE = Path(__file__).resolve().parents[2] / "docker-compose.yml"
 STARTUP_TIMEOUT_SECONDS = 120
@@ -35,6 +42,7 @@ RABBITMQ_PASSWORD = "test-password"
 STORAGE_ACCESS_KEY = "test-access"
 STORAGE_SECRET_KEY = "test-secret-key"
 JWT_SECRET = "integration-test-jwt-secret-of-32-chars-or-more"
+TEST_COLLECTION = "chunks_test"
 
 
 def compose_image(name: str) -> str:
@@ -182,3 +190,87 @@ async def empty_all_tables(engine: AsyncEngine) -> None:
     async with engine.begin() as connection:
         # Safe: the table names come from our own models, not from users.
         await connection.execute(text(f"TRUNCATE {tables} CASCADE"))
+
+
+# --------------------------------------------------- the whole stack (Phase 2) ----
+
+
+@pytest.fixture(scope="session")
+def stack_settings(
+    postgres_url: str, rabbitmq_url: str, qdrant_url: str, storage_url: str
+) -> Settings:
+    """Real Postgres, RabbitMQ, Qdrant and storage (Redis is not used yet).
+
+    Short retry delays and a fast outbox poll, so the tests do not wait long. With the
+    fake embedder a "token" is a word, so chunks here are 100 words.
+    """
+    return Settings(
+        _env_file=None,
+        app_env="test",
+        database_url=postgres_url,
+        redis_url="redis://localhost:6379/0",
+        rabbitmq_url=rabbitmq_url,
+        qdrant_url=qdrant_url,
+        qdrant_collection=TEST_COLLECTION,
+        s3_endpoint_url=storage_url,
+        s3_access_key=STORAGE_ACCESS_KEY,
+        s3_secret_key=STORAGE_SECRET_KEY,
+        jwt_secret=JWT_SECRET,
+        chunk_size_tokens=100,
+        chunk_overlap_tokens=10,
+        ingest_retry_delays_seconds=[1, 1],
+        outbox_poll_seconds=0.1,
+    )
+
+
+@pytest.fixture(scope="session")
+async def stack(stack_settings: Settings, db_engine: AsyncEngine) -> Settings:
+    """Prepare every store once, like the `init` container does."""
+    await init_stores(stack_settings, vector_dimension=FakeEmbedder.dimension)
+    return stack_settings
+
+
+@pytest.fixture
+async def clean_stack(stack: Settings, db_engine: AsyncEngine) -> AsyncIterator[Settings]:
+    """Every store empty at the start of the test: tables, queues and vectors."""
+    await empty_all_tables(db_engine)
+    connection = await aio_pika.connect(str(stack.rabbitmq_url))
+    async with connection:
+        channel = await connection.channel()
+        for name in [JOBS_QUEUE, DEAD_QUEUE, *map(retry_queue, stack.ingest_retry_delays_seconds)]:
+            await (await channel.get_queue(name)).purge()
+    clients = Clients.create(stack)
+    try:
+        await clients.qdrant.delete_collection(stack.qdrant_collection)
+        await ensure_collection(clients.qdrant, stack.qdrant_collection, FakeEmbedder.dimension)
+        yield stack
+    finally:
+        await clients.aclose()
+
+
+@pytest.fixture
+async def stack_clients(clean_stack: Settings) -> AsyncIterator[Clients]:
+    """Clients for looking into the stores from a test."""
+    clients = Clients.create(clean_stack)
+    try:
+        yield clients
+    finally:
+        await clients.aclose()
+
+
+@pytest.fixture
+async def docs_api(clean_stack: Settings) -> AsyncIterator[AsyncClient]:
+    """An HTTP client for the app, using the whole stack."""
+    app = create_app(clean_stack)
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        yield client
+
+
+@pytest.fixture
+async def worker(clean_stack: Settings) -> AsyncIterator[None]:
+    """A worker running in the background, with the fake embedder."""
+    async with running_worker(clean_stack):
+        yield

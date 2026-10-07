@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from api.errors import install_error_handlers
 from api.middleware import RequestContextMiddleware
 from api.readiness import build_checks
-from api.routes import api_keys, auth, me, system
+from api.routes import api_keys, auth, documents, me, system
 from shared.clients import Clients
 from shared.config import Settings, get_settings
 from shared.logging import configure_logging
@@ -43,6 +43,7 @@ def create_app(settings: Settings) -> FastAPI:
     app.include_router(auth.router)
     app.include_router(api_keys.router)
     app.include_router(me.router)
+    app.include_router(documents.router)
     return app
 
 

@@ -10,14 +10,15 @@ PY = uv run python -m
 DATA_SERVICES = postgres redis rabbitmq qdrant rustfs
 
 .DEFAULT_GOAL := help
-.PHONY: help setup up down dev migrate logs ps test test-unit lint fmt
+.PHONY: help setup up down dev worker migrate logs ps test test-unit lint fmt
 
 help:
 	@echo Commands:
 	@echo   make setup     - install Python packages, create .env, install git hooks
-	@echo   make up        - start everything in Docker: API, data services, monitoring
+	@echo   make up        - start everything in Docker: API, worker, data services, monitoring
 	@echo   make down      - stop everything, data is kept
 	@echo   make dev       - data services in Docker, API on your machine with auto-reload
+	@echo   make worker    - run the ingestion worker on your machine, next to make dev
 	@echo   make migrate   - bring the database in .env up to the newest version
 	@echo   make logs      - follow the logs of all containers
 	@echo   make ps        - show container status
@@ -43,8 +44,11 @@ down:
 
 dev: .env
 	$(COMPOSE) up -d --wait $(DATA_SERVICES)
-	$(PY) shared.db.migrate
+	$(PY) shared.init
 	$(PY) uvicorn api.main:create_app_from_env --factory --reload --reload-dir api --reload-dir shared --port 8000 --no-access-log
+
+worker: .env
+	$(PY) worker
 
 migrate: .env
 	$(PY) shared.db.migrate

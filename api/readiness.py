@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Literal
 
-from shared.clients import Clients, postgres, qdrant, rabbitmq, redis, storage
+from shared.clients import Clients, postgres, qdrant, redis, storage
 from shared.config import Settings
 
 logger = logging.getLogger(__name__)
@@ -28,11 +28,14 @@ class DependencyCheck:
 
 
 def build_checks(clients: Clients, settings: Settings) -> list[DependencyCheck]:
-    """The probes for every service the API depends on."""
+    """The probes for every service the API depends on.
+
+    Not RabbitMQ: the API saves jobs in the outbox (Postgres), and the worker sends them.
+    So uploads keep working while RabbitMQ is down (CLAUDE.md, D4).
+    """
     return [
         DependencyCheck("postgres", partial(postgres.ping, clients.db)),
         DependencyCheck("redis", partial(redis.ping, clients.redis)),
-        DependencyCheck("rabbitmq", partial(rabbitmq.ping, settings)),
         DependencyCheck("qdrant", partial(qdrant.ping, clients.qdrant)),
         DependencyCheck("storage", partial(storage.ping, clients.s3)),
     ]

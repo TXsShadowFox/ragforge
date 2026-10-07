@@ -22,6 +22,9 @@ x-ragforge-app: &ragforge-app
     RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
     QDRANT_URL: http://qdrant:6333
     S3_ENDPOINT_URL: http://rustfs:9000
+    MODEL_CACHE_DIR: /models
+  volumes:
+    - model-cache:/models  # the embedding model is downloaded once, then kept here
 
 services:
   # ---------------------------------------------------------------- data ----
@@ -145,21 +148,37 @@ services:
       retries: 10
 
   # ------------------------------------------------------------ ragforge ----
-  migrate:
+  init:
     <<: *ragforge-app
-    # Brings the database up to the newest version, then exits. The API waits for it.
-    command: ["python", "-m", "shared.db.migrate"]
+    # Prepares every store (migrations, bucket, Qdrant collection, queues), then exits.
+    # The API and the worker start only after it succeeds.
+    command: ["python", "-m", "shared.init"]
     restart: "no"
     depends_on:
       postgres:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      rustfs:
+        condition: service_healthy
+
+  worker:
+    <<: *ragforge-app
+    # Sends outbox jobs to RabbitMQ and processes documents. About 0.35 GB of RAM when idle,
+    # 0.6 GB while it embeds (with EMBEDDING_BATCH_SIZE=8).
+    command: ["python", "-m", "worker"]
+    depends_on:
+      init:
+        condition: service_completed_successfully
 
   api:
     <<: *ragforge-app
     ports:
       - "8000:8000"
     depends_on:
-      migrate:
+      init:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
@@ -188,3 +207,4 @@ volumes:
   rustfs-data:
   prometheus-data:
   grafana-data:
+  model-cache:

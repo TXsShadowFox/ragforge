@@ -1,12 +1,21 @@
-"""Helpers for the API tests: sign up, log in, auth headers, create keys."""
+"""Helpers for the API tests: sign up, log in, keys, uploads, and a background worker."""
 
+import asyncio
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from httpx import AsyncClient
+from httpx import AsyncClient, Response
+
+from shared.config import Settings
+from shared.embeddings import Embedder
+from tests.fakes import FakeEmbedder
+from worker.runner import run_worker
 
 PASSWORD = "correct-horse-battery-staple"
+WAIT_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -54,3 +63,61 @@ async def create_key(client: AsyncClient, account: Account, **body: Any) -> dict
     assert response.status_code == 201, response.text
     created: dict[str, Any] = response.json()
     return created
+
+
+async def upload(client: AsyncClient, account: Account, filename: str, content: bytes) -> Response:
+    return await client.post(
+        "/v1/documents", files={"file": (filename, content)}, headers=account.headers
+    )
+
+
+async def upload_and_wait(
+    client: AsyncClient, account: Account, filename: str, content: bytes
+) -> dict[str, Any]:
+    """Upload a file and wait until the worker is done with it (ready or failed)."""
+    response = await upload(client, account, filename, content)
+    assert response.status_code == 202, response.text
+    return await wait_for_status(client, account, response.json()["document"]["id"])
+
+
+async def wait_for_status(
+    client: AsyncClient,
+    account: Account,
+    document_id: str,
+    statuses: tuple[str, ...] = ("ready", "failed"),
+) -> dict[str, Any]:
+    deadline = asyncio.get_running_loop().time() + WAIT_SECONDS
+    while True:
+        response = await client.get(f"/v1/documents/{document_id}", headers=account.headers)
+        assert response.status_code == 200, response.text
+        document: dict[str, Any] = response.json()
+        if document["status"] in statuses:
+            return document
+        if asyncio.get_running_loop().time() > deadline:
+            raise AssertionError(f"The document is still {document['status']!r}")
+        await asyncio.sleep(0.1)
+
+
+async def wait_until_deleted(client: AsyncClient, account: Account, document_id: str) -> None:
+    deadline = asyncio.get_running_loop().time() + WAIT_SECONDS
+    while True:
+        response = await client.get(f"/v1/documents/{document_id}", headers=account.headers)
+        if response.status_code == 404:
+            return
+        if asyncio.get_running_loop().time() > deadline:
+            raise AssertionError(f"The document was not deleted: {response.text}")
+        await asyncio.sleep(0.1)
+
+
+@asynccontextmanager
+async def running_worker(
+    settings: Settings, embedder: Embedder | None = None
+) -> AsyncIterator[None]:
+    """Run the worker in the background while the block runs, then stop it."""
+    stop = asyncio.Event()
+    task = asyncio.create_task(run_worker(settings, embedder=embedder or FakeEmbedder(), stop=stop))
+    try:
+        yield
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, timeout=WAIT_SECONDS)

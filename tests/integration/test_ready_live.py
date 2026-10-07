@@ -11,7 +11,7 @@ from shared.config import Settings
 
 pytestmark = pytest.mark.integration
 
-ALL_SERVICES = ["postgres", "redis", "rabbitmq", "qdrant", "storage"]
+ALL_SERVICES = ["postgres", "redis", "qdrant", "storage"]  # the API does not use RabbitMQ
 
 
 async def _get_ready(settings: Settings) -> tuple[int, dict[str, Any]]:

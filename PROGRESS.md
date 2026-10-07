@@ -24,14 +24,18 @@ Checklist of the phases in [PROJECT_SPEC.md](PROJECT_SPEC.md). Updated after eve
 - [x] Tests: signup, login, key create/revoke, wrong key returns 401, roles, tenant isolation
       (87 tests: 61 unit + 26 integration)
 
-## Phase 2: Upload + ingestion pipeline
+## Phase 2: Upload + ingestion pipeline (done)
 
-- [ ] Upload to object storage, save the document row, publish a job to RabbitMQ
-- [ ] Worker: parse (PDF, DOCX, TXT, MD, HTML), clean text, keep page numbers
-- [ ] Token-based recursive chunking (default 500 tokens, 50 overlap)
-- [ ] Batch embeddings, upsert to Qdrant; save chunks + tsvector in Postgres
-- [ ] Retries + dead-letter queue, status updates, duplicate detection by SHA-256
-- [ ] A 50-page PDF ends in `ready`; a broken file ends in `failed` with an error
+- [x] Upload to object storage, save the document row + job in one transaction (outbox pattern)
+- [x] Worker: parse (PDF, DOCX, TXT, MD, HTML), clean text, keep page numbers
+- [x] Token-based recursive chunking (default 500 tokens, 50 overlap), in the model's own tokens
+- [x] Batch embeddings (fastembed, bge-small, ONNX), upsert to Qdrant; chunks + tsvector in Postgres
+- [x] Retries (10 s, 1 min, 5 min) + dead-letter queue, status updates, duplicates by SHA-256
+- [x] Delete from Postgres, Qdrant and storage (a worker job); list with cursor paging
+- [x] A 50-page PDF ends in `ready`; a broken file ends in `failed` with an error
+      (real model in Docker: 50 pages, 22,500 words -> 60 chunks, ready in 11.3 s)
+- [x] Tests: 163 (118 unit + 45 integration), incl. retries, dead-letter queue, tenant isolation
+- [x] Measured: `EMBEDDING_BATCH_SIZE` 32 -> 8 cut worker RAM 941 -> 594 MB and time 16.5 -> 11.3 s
 
 ## Phase 3: Retrieval + chat
 

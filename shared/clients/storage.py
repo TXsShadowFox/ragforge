@@ -2,15 +2,18 @@
 
 We only use the standard S3 API (boto3), so any S3-compatible service works:
 RustFS locally, AWS S3 or Cloudflare R2 in the cloud. Only the settings change.
+boto3 is synchronous, so every call runs in a thread to keep the event loop free.
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+import contextlib
+from typing import TYPE_CHECKING, BinaryIO
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 
 from shared.config import Settings
 
@@ -43,8 +46,55 @@ def create_s3_client(settings: Settings) -> S3Client:
 
 
 async def ping(client: S3Client) -> None:
-    """List buckets. Raises if storage cannot be reached or the keys are wrong.
-
-    boto3 is synchronous, so we run it in a thread to keep the event loop free.
-    """
+    """List buckets. Raises if storage cannot be reached or the keys are wrong."""
     await asyncio.to_thread(client.list_buckets)
+
+
+async def ensure_bucket(client: S3Client, bucket: str) -> None:
+    """Create the bucket if it does not exist yet. Safe to call many times."""
+
+    def ensure() -> None:
+        try:
+            client.head_bucket(Bucket=bucket)
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") not in ("404", "NoSuchBucket", "NotFound"):
+                raise
+            # Another process may create it at the same moment: that is fine.
+            with contextlib.suppress(client.exceptions.BucketAlreadyOwnedByYou):
+                client.create_bucket(Bucket=bucket)
+
+    await asyncio.to_thread(ensure)
+
+
+async def upload_file(
+    client: S3Client, bucket: str, key: str, file: BinaryIO, content_type: str
+) -> None:
+    """Upload a file object (big files go up in parts)."""
+    await asyncio.to_thread(
+        client.upload_fileobj, file, bucket, key, ExtraArgs={"ContentType": content_type}
+    )
+
+
+async def download_file(client: S3Client, bucket: str, key: str) -> bytes:
+    def download() -> bytes:
+        return client.get_object(Bucket=bucket, Key=key)["Body"].read()
+
+    return await asyncio.to_thread(download)
+
+
+async def delete_file(client: S3Client, bucket: str, key: str) -> None:
+    """Delete a file. Deleting a file that is not there is not an error (S3 works this way)."""
+    await asyncio.to_thread(client.delete_object, Bucket=bucket, Key=key)
+
+
+async def file_exists(client: S3Client, bucket: str, key: str) -> bool:
+    def exists() -> bool:
+        try:
+            client.head_object(Bucket=bucket, Key=key)
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") in ("404", "NoSuchKey", "NotFound"):
+                return False
+            raise
+        return True
+
+    return await asyncio.to_thread(exists)

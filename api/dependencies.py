@@ -26,12 +26,18 @@ def get_ready_checks(request: Request) -> list[DependencyCheck]:
     return checks
 
 
+def get_clients(request: Request) -> Clients:
+    """The service clients, created at startup (see `api.main.lifespan`)."""
+    clients: Clients = request.app.state.clients
+    return clients
+
+
 async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
     """One database session per request. Routes commit their own changes."""
-    clients: Clients = request.app.state.clients
-    async with clients.sessions() as session:
+    async with get_clients(request).sessions() as session:
         yield session
 
 
 SettingsDep = Annotated[Settings, Depends(get_app_settings)]
+ClientsDep = Annotated[Clients, Depends(get_clients)]
 SessionDep = Annotated[AsyncSession, Depends(get_session)]

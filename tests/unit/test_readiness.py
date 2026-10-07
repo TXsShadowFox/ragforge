@@ -53,11 +53,12 @@ async def test_probes_run_at_the_same_time() -> None:
     assert await run_checks(checks, timeout_seconds=1) == {"first": "ok", "second": "ok"}
 
 
-async def test_build_checks_covers_every_service(settings: Settings) -> None:
+async def test_build_checks_covers_every_service_the_api_uses(settings: Settings) -> None:
     clients = Clients.create(settings)  # creating clients does not connect
     try:
         names = [check.name for check in build_checks(clients, settings)]
     finally:
         await clients.aclose()
 
-    assert names == ["postgres", "redis", "rabbitmq", "qdrant", "storage"]
+    # Not RabbitMQ: the API writes jobs to the outbox in Postgres; the worker sends them.
+    assert names == ["postgres", "redis", "qdrant", "storage"]

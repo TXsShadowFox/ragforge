@@ -34,15 +34,20 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # -------------------------------------------------------------- runtime ----
 FROM python:3.12-slim AS runtime
 
-# Never run as root inside the container.
-RUN useradd --create-home --uid 10001 ragforge
+# Never run as root inside the container. /models holds the downloaded embedding model;
+# a new Docker volume mounted there copies this owner, so the app can write to it.
+RUN useradd --create-home --uid 10001 ragforge \
+    && mkdir /models \
+    && chown ragforge:ragforge /models
 
 WORKDIR /app
 COPY --from=builder --chown=ragforge:ragforge /app/.venv /app/.venv
 
+# HF_HUB_DISABLE_PROGRESS_BARS: no progress bars in the logs when the model is downloaded.
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    HF_HUB_DISABLE_PROGRESS_BARS=1
 
 USER ragforge
 EXPOSE 8000
