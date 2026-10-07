@@ -2,7 +2,7 @@
 
 Checklist of the phases in [PROJECT_SPEC.md](PROJECT_SPEC.md). Updated after every phase.
 
-## Phase 0: Project setup (almost done)
+## Phase 0: Project setup (done)
 
 - [x] Folder structure: `api/`, `worker/`, `shared/`, `frontend/`, `widget/`, `infra/`, `tests/`, `loadtests/`, `eval/`
 - [x] docker-compose: Postgres, Redis, RabbitMQ, Qdrant, RustFS (S3), Prometheus, Grafana + API
@@ -10,9 +10,9 @@ Checklist of the phases in [PROJECT_SPEC.md](PROJECT_SPEC.md). Updated after eve
 - [x] ruff + mypy (strict) + pre-commit git hooks
 - [x] GitHub Actions CI: lint + types, tests, Docker build
 - [x] `/health`, `/ready`, `/metrics`, with 14 unit tests and 2 integration tests
-- [ ] `make up` starts everything and `/health` returns ok (waiting for Docker Desktop)
-- [ ] Integration tests pass on real containers (waiting for Docker Desktop)
-- [ ] CI is green on GitHub (waiting for the GitHub repo)
+- [x] `make up` starts all 8 containers (healthy); `/health` and `/ready` return ok; Prometheus scrapes the API
+- [x] All 16 tests pass, including the 2 integration tests on real containers
+- [x] CI is green on GitHub: https://github.com/TXsShadowFox/ragforge/actions
 
 ## Phase 1: Tenants, auth, API keys
 

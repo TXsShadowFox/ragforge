@@ -11,6 +11,7 @@ focus is system design, backend engineering and RAG quality, backed by tests and
 
 - Full spec: [PROJECT_SPEC.md](PROJECT_SPEC.md)
 - Progress checklist: [PROGRESS.md](PROGRESS.md)
+- Repo (public): https://github.com/TXsShadowFox/ragforge. CI runs on every push to `main` and on PRs.
 
 ## Working rules
 
@@ -25,7 +26,9 @@ focus is system design, backend engineering and RAG quality, backed by tests and
 ## How to run
 
 Needs Docker Desktop, [uv](https://docs.astral.sh/uv/) and GNU make
-(Windows: `winget install -e --id ezwinports.make`).
+(Windows: `winget install -e --id ezwinports.make`). On Windows, Docker Desktop needs WSL 2:
+from an **admin** PowerShell run `winget install -e --id Microsoft.WSL`, then
+`winget install -e --id Docker.DockerDesktop`. Open a new terminal after installing, so it sees the new PATH.
 
 | Command | What it does |
 |---|---|
@@ -93,6 +96,14 @@ frontend/ widget/ loadtests/ eval/   later phases (each has a README)
 - boto3 >= 1.36 sends extra checksums by default; we set `when_required` so S3-compatible servers accept requests.
 - Postgres 18 image: mount the volume at `/var/lib/postgresql` (not `.../data`).
 - The Qdrant image has no curl, so its healthcheck uses bash `/dev/tcp`.
+- RabbitMQ's healthcheck is a TCP check of port 5672, not `rabbitmq-diagnostics`. That tool runs as root,
+  and on a slow first start it can create the Erlang cookie file before RabbitMQ does. RabbitMQ then
+  stops with `eacces` on `.erlang.cookie`.
+- `astral-sh/setup-uv` has no short major tags after v7, so `@v10` fails in CI. Use the full version (`@v10.2.0`).
+- winget cannot ask for admin rights for MSIX packages such as `Microsoft.WSL` (error `0x80073d28`).
+  Run that install from an admin PowerShell.
+- RAM: `make up` uses about 1.8 GB inside Docker (Grafana alone about 0.9 GB). On the 8 GB laptop,
+  use `make dev` for daily work and `make down` when you are done.
 - The uv cache (C:) and the project (X:) are on different drives, so uv warns "Failed to hardlink files". It is harmless; set `UV_LINK_MODE=copy` to hide it.
 
 ## Notes for later phases (from the spec review)
