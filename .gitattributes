@@ -1,0 +1,12 @@
+# Always use LF line endings, even on Windows.
+# CRLF endings break shell scripts and config files inside Linux containers.
+* text=auto eol=lf
+
+# Binary files: never touch their bytes.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.docx binary

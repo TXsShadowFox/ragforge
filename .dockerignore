@@ -1,0 +1,19 @@
+# Keep the Docker build context small: only what the image needs.
+.git
+.github
+.venv
+.env
+.env.*
+**/__pycache__
+**/*.py[cod]
+.mypy_cache
+.ruff_cache
+.pytest_cache
+tests
+frontend
+widget
+loadtests
+eval
+infra
+docs
+node_modules

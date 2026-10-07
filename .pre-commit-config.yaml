@@ -1,0 +1,69 @@
+# Git hooks: these checks run on every `git commit`.
+# `make setup` installs them. Run them by hand with: uv run python -m pre_commit run --all-files
+#
+# Every hook runs from our own uv environment as `python -m <module>`:
+# - versions come from uv.lock, the same as in CI
+# - Windows Smart App Control can block the small .exe launchers that pre-commit
+#   would otherwise create, but it allows python.exe
+# ("language: unsupported" means pre-commit does not install the tool itself.)
+repos:
+  - repo: local
+    hooks:
+      # --- File hygiene (from the pre-commit-hooks package) ---
+      - id: trailing-whitespace
+        name: trim trailing whitespace
+        entry: uv run python -m pre_commit_hooks.trailing_whitespace_fixer --markdown-linebreak-ext=md
+        language: unsupported
+        types: [text]
+      - id: end-of-file-fixer
+        name: fix end of files
+        entry: uv run python -m pre_commit_hooks.end_of_file_fixer
+        language: unsupported
+        types: [text]
+      - id: mixed-line-ending
+        name: use LF line endings
+        entry: uv run python -m pre_commit_hooks.mixed_line_ending --fix=lf
+        language: unsupported
+        types: [text]
+      - id: check-yaml
+        name: check yaml
+        entry: uv run python -m pre_commit_hooks.check_yaml
+        language: unsupported
+        types: [yaml]
+      - id: check-toml
+        name: check toml
+        entry: uv run python -m pre_commit_hooks.check_toml
+        language: unsupported
+        types: [toml]
+      - id: check-merge-conflict
+        name: check for merge conflicts
+        entry: uv run python -m pre_commit_hooks.check_merge_conflict
+        language: unsupported
+        types: [text]
+      - id: check-added-large-files
+        name: check for large files
+        entry: uv run python -m pre_commit_hooks.check_added_large_files --maxkb=1024
+        language: unsupported
+      - id: detect-private-key
+        name: detect private keys
+        entry: uv run python -m pre_commit_hooks.detect_private_key
+        language: unsupported
+        types: [text]
+
+      # --- Python: lint, format, types ---
+      - id: ruff-check
+        name: ruff check
+        entry: uv run python -m ruff check --fix
+        language: unsupported
+        types_or: [python, pyi]
+      - id: ruff-format
+        name: ruff format
+        entry: uv run python -m ruff format
+        language: unsupported
+        types_or: [python, pyi]
+      - id: mypy
+        name: mypy
+        entry: uv run python -m mypy
+        language: unsupported
+        types: [python]
+        pass_filenames: false

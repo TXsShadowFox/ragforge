@@ -1,0 +1,68 @@
+"""Tests for the settings and for `.env.example`, the template of `.env`."""
+
+from pathlib import Path
+
+import pytest
+from pydantic import ValidationError
+
+from shared.config import Settings
+
+ENV_EXAMPLE = Path(__file__).resolve().parents[2] / ".env.example"
+
+SETTING_KEYS = {name.upper() for name in Settings.model_fields}
+
+# Keys in .env.example that only Docker Compose uses, to set up the containers.
+COMPOSE_ONLY_KEYS = {
+    "POSTGRES_USER",
+    "POSTGRES_PASSWORD",
+    "POSTGRES_DB",
+    "RABBITMQ_USER",
+    "RABBITMQ_PASSWORD",
+    "GRAFANA_ADMIN_USER",
+    "GRAFANA_ADMIN_PASSWORD",
+}
+
+
+def _example_keys() -> set[str]:
+    lines = (line.strip() for line in ENV_EXAMPLE.read_text(encoding="utf-8").splitlines())
+    return {line.split("=", 1)[0] for line in lines if line and not line.startswith("#")}
+
+
+@pytest.fixture
+def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remove these keys from the real environment, so only the test decides them."""
+    for key in SETTING_KEYS | COMPOSE_ONLY_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+
+def test_env_example_lists_every_setting() -> None:
+    assert SETTING_KEYS - _example_keys() == set()
+
+
+def test_env_example_has_no_unknown_keys() -> None:
+    assert _example_keys() - SETTING_KEYS - COMPOSE_ONLY_KEYS == set()
+
+
+@pytest.mark.usefixtures("clean_env")
+def test_env_example_is_valid_and_fills_in_passwords() -> None:
+    settings = Settings(_env_file=ENV_EXAMPLE)
+
+    # ${POSTGRES_USER} and friends are filled in from the same file.
+    assert str(settings.database_url) == (
+        "postgresql+asyncpg://ragforge:change-me-postgres@localhost:5432/ragforge"
+    )
+    assert str(settings.rabbitmq_url) == "amqp://ragforge:change-me-rabbitmq@localhost:5672/"
+    assert settings.qdrant_api_key is None  # an empty value means "not set"
+
+
+@pytest.mark.usefixtures("clean_env")
+def test_missing_secret_stops_the_app() -> None:
+    with pytest.raises(ValidationError, match="database_url"):
+        Settings(_env_file=None)
+
+
+@pytest.mark.usefixtures("clean_env")
+def test_environment_variables_win_over_the_env_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+
+    assert Settings(_env_file=ENV_EXAMPLE).log_level == "DEBUG"
