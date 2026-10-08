@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Annotated, Self
 
 from botocore.exceptions import BotoCoreError, ClientError
-from fastapi import APIRouter, Query, Response, UploadFile, status
+from fastapi import APIRouter, Depends, Query, Response, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import Uuid, func, select
 from sqlalchemy.exc import IntegrityError
@@ -21,6 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.auth.principal import PrivateAccess
 from api.dependencies import ClientsDep, SessionDep, SettingsDep
 from api.errors import ApiError, not_found
+from api.ratelimit import limit_requests
+from shared.answer_cache import bump_docs_version, forget_old_answers
 from shared.clients.storage import delete_file, upload_file
 from shared.db.models import Document, DocumentStatus, JobType
 from shared.file_types import SNIFF_BYTES, UnsupportedFileError, clean_filename, detect_file_type
@@ -28,7 +30,9 @@ from shared.jobs import Job
 from shared.outbox import add_job
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/v1/documents", tags=["documents"])
+router = APIRouter(
+    prefix="/v1/documents", tags=["documents"], dependencies=[Depends(limit_requests)]
+)
 
 READ_CHUNK_BYTES = 1024 * 1024
 
@@ -181,14 +185,25 @@ async def get_document(
 
 @router.delete("/{document_id}", status_code=status.HTTP_202_ACCEPTED)
 async def delete_document(
-    document_id: uuid.UUID, principal: PrivateAccess, session: SessionDep
+    document_id: uuid.UUID,
+    principal: PrivateAccess,
+    session: SessionDep,
+    clients: ClientsDep,
+    settings: SettingsDep,
 ) -> DocumentInfo:
     """Delete a document from Postgres, Qdrant and storage. The worker does it soon."""
     document = await _get_owned(session, principal.tenant_id, document_id, for_update=True)
-    if document.status is not DocumentStatus.DELETING:
-        document.status = DocumentStatus.DELETING
-        add_job(session, Job(JobType.DELETE, principal.tenant_id, document.id))
-        await session.commit()
+    if document.status is DocumentStatus.DELETING:
+        return DocumentInfo.from_row(document)
+    was_searchable = document.status is DocumentStatus.READY
+    document.status = DocumentStatus.DELETING  # search stops using it at once
+    add_job(session, Job(JobType.DELETE, principal.tenant_id, document.id))
+    new_version = await bump_docs_version(session, principal.tenant_id) if was_searchable else None
+    await session.commit()
+    if new_version is not None:  # cached answers may cite this document
+        await forget_old_answers(
+            clients.qdrant, settings.answer_cache_collection, principal.tenant_id, new_version
+        )
     return DocumentInfo.from_row(document)
 
 

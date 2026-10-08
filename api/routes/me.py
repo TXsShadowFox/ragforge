@@ -3,14 +3,15 @@
 import uuid
 from typing import Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from api.auth.principal import PrivateAccess, UserPrincipal
 from api.dependencies import SessionDep
+from api.ratelimit import limit_requests
 from shared.db.models import Tenant, TenantPlan, UserRole
 
-router = APIRouter(prefix="/v1", tags=["auth"])
+router = APIRouter(prefix="/v1", tags=["auth"], dependencies=[Depends(limit_requests)])
 
 
 class MeResponse(BaseModel):

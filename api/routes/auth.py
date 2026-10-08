@@ -14,6 +14,7 @@ from api.auth.passwords import hash_password, needs_rehash, verify_dummy_passwor
 from api.auth.tokens import create_access_token
 from api.dependencies import SessionDep, SettingsDep
 from api.errors import ApiError, unauthorized
+from api.ratelimit import RateLimiterDep, too_many_requests
 from shared.db.models import Tenant, User, UserRole
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
@@ -67,9 +68,17 @@ async def signup(body: SignupRequest, session: SessionDep) -> SignupResponse:
 
 
 @router.post("/login")
-async def login(body: LoginRequest, session: SessionDep, settings: SettingsDep) -> TokenResponse:
+async def login(
+    body: LoginRequest, session: SessionDep, settings: SettingsDep, limiter: RateLimiterDep
+) -> TokenResponse:
     """Check the email and password, and return a login token for the dashboard."""
-    user = await session.scalar(select(User).where(User.email == _normalize_email(body.email)))
+    email = _normalize_email(body.email)
+    # Limit tries per email before the (slow) password check: stops password guessing,
+    # and too many tries cannot keep the CPU busy with argon2.
+    decision = await limiter.hit(f"login:{email}", settings.login_attempts_per_minute)
+    if decision is not None and not decision.allowed:
+        raise too_many_requests(decision)
+    user = await session.scalar(select(User).where(User.email == email))
     if user is None:
         await asyncio.to_thread(verify_dummy_password, body.password)
         raise _wrong_login()

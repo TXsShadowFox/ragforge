@@ -93,6 +93,24 @@ class Settings(BaseSettings):
     min_rerank_score: float = -5.0
     chat_history_messages: int = Field(default=6, ge=0, le=50)
 
+    # --- Answer cache ---
+    cache_ttl_seconds: PositiveInt = 24 * 60 * 60
+    answer_cache_collection: str = "answer_cache"
+    # Reuse an answer for a question at least this similar (cosine). 0.95 is NOT safe with
+    # bge-small: "...on weekends?" vs "...on weekdays?" scored 0.965 (CLAUDE.md, D40).
+    semantic_cache_threshold: float = Field(default=0.98, gt=0, le=1)
+
+    # --- Rate limits: per API key or logged-in user, per minute, by the tenant's plan ---
+    rate_limit_free_requests: PositiveInt = 60
+    rate_limit_free_questions: PositiveInt = 10
+    rate_limit_pro_requests: PositiveInt = 600
+    rate_limit_pro_questions: PositiveInt = 100
+    login_attempts_per_minute: PositiveInt = 5
+
+    # --- Cost: the LLM's price in US dollars per million tokens (Groq gpt-oss-20b) ---
+    llm_price_input_per_million: float = Field(default=0.075, ge=0)
+    llm_price_output_per_million: float = Field(default=0.30, ge=0)
+
     @model_validator(mode="after")
     def _overlap_is_smaller_than_a_chunk(self) -> Self:
         if self.chunk_overlap_tokens >= self.chunk_size_tokens:

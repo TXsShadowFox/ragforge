@@ -15,8 +15,10 @@ from fastapi import FastAPI
 from api.ai import AIServices, load_ai_services
 from api.errors import install_error_handlers
 from api.middleware import RequestContextMiddleware
+from api.ratelimit import RateLimiter
 from api.readiness import build_checks
-from api.routes import api_keys, auth, chat, documents, feedback, me, system
+from api.routes import analytics, api_keys, auth, chat, documents, feedback, me, system
+from shared.answer_cache import AnswerCache
 from shared.clients import Clients
 from shared.config import Settings, get_settings
 from shared.logging import configure_logging
@@ -36,6 +38,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.ai = ai
     app.state.clients = clients
     app.state.ready_checks = build_checks(clients, settings)
+    app.state.answer_cache = AnswerCache(clients.redis, clients.qdrant, settings)
+    app.state.rate_limiter = RateLimiter(clients.redis)
     try:
         yield
     finally:
@@ -57,6 +61,7 @@ def create_app(settings: Settings, *, ai: AIServices | None = None) -> FastAPI:
     app.include_router(documents.router)
     app.include_router(chat.router)
     app.include_router(feedback.router)
+    app.include_router(analytics.router)
     return app
 
 

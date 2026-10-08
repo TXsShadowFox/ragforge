@@ -57,8 +57,10 @@ api/                FastAPI app: main.py (factory + lifespan), dependencies.py, 
   ai.py             AIServices (embedder, reranker, LLM): loaded and warmed up at startup
   auth/             passwords (argon2), tokens (JWT), keys (API keys), principal (who is calling)
   chat/             retrieval (2 searches + RRF + rerank), prompts (rules, citations), service
-                    (one chat turn: rewrite, search, LLM, save)
-  routes/           one module per area: system, auth, api_keys, me, documents, chat, feedback
+                    (one chat turn: rewrite, cache, search, LLM, save), usage (cost, daily totals)
+  routes/           one module per area: system, auth, api_keys, me, documents, chat, feedback,
+                    analytics
+  ratelimit.py      token buckets in Redis (one Lua script): limit_requests, limit_questions
   errors.py         the one JSON error format (ApiError, unauthorized, forbidden, not_found)
   middleware.py     request ID, one JSON access log line per request, safe 500s
 shared/             used by the API and the worker
@@ -66,20 +68,22 @@ shared/             used by the API and the worker
   logging.py        JSON logs + log context (request ID, tenant ID)
   clients/          one module per service (Postgres engine + ORM sessions, Redis, Qdrant, storage)
   db/               models.py (tables), migrate.py (`python -m shared.db.migrate`), migrations/
-  init.py           `python -m shared.init`: migrations, bucket, Qdrant collection, queues
+  init.py           `python -m shared.init`: migrations, bucket, Qdrant collections, queues
+  answer_cache.py   answer cache: exact (Redis) + semantic (Qdrant); docs_version helpers
   file_types.py     accepted files, checked by their first bytes
   embeddings.py     Embedder interface + FastEmbedEmbedder (bge-small, ONNX)
   rerank.py         Reranker interface + FastEmbedReranker (ms-marco-MiniLM-L-6-v2)
   llm.py            LLM interface + OpenAICompatibleLLM (Groq, Ollama, OpenAI, ...)
-  vector_store.py   Qdrant: one collection, tenant_id on every point
+  vector_store.py   Qdrant: the chunks collection, tenant_id on every point
   jobs.py           RabbitMQ: queue names, job messages, retry delays
   outbox.py         add_job(): save a job in the same transaction as the change
-worker/             `python -m worker`: runner (main loop), relay (outbox -> RabbitMQ),
-                    consumer (retries, dead-letter queue), pipeline (ingest + delete jobs),
-                    parsing (PDF/DOCX/HTML/MD/TXT), cleaning, chunking
+worker/             `python -m worker`: runner (main loop, hourly cache cleanup), relay
+                    (outbox -> RabbitMQ), consumer (retries, dead-letter queue), pipeline
+                    (ingest + delete jobs), parsing (PDF/DOCX/HTML/MD/TXT), cleaning, chunking
 infra/              Dockerfile, Prometheus config, Grafana provisioning
 tests/unit/         fast tests, no Docker
 tests/integration/  real services via testcontainers (marked `integration`); helpers.py
+                    (sign up, upload, ask, chat_client, with_redis_down, ...)
 tests/fakes.py      fakes: FakeEmbedder (a "token" is a word), FakeReranker (shared words),
                     FakeLLM (answers from source [1], records calls), FailingLLM; fake_ai()
 tests/documents.py  make_pdf(), make_docx(), handbook_page() for test files
@@ -124,6 +128,13 @@ alembic.ini         only for the `alembic` command line (creating new migrations
   as the change, never a direct publish to RabbitMQ from the API.
 - Jobs must be safe to run twice (computed IDs, "insert or replace", status checks).
   A file that can never work raises `BadDocumentError` (no retries); anything else is retried.
+- Every router for callers has `dependencies=[Depends(limit_requests)]` (chat also has
+  `limit_questions`), from `api/ratelimit.py`.
+- When a tenant's searchable documents change (a document becomes ready, or a ready one is
+  deleted), call `bump_docs_version()` in the same transaction and `forget_old_answers()` after
+  the commit. Otherwise the cache keeps giving answers made from the old documents.
+- Redis is a helper: code that uses it must keep working (allow, or "not in the cache") when
+  Redis is down.
 
 ## Decisions
 
@@ -145,7 +156,7 @@ alembic.ini         only for the `alembic` command line (creating new migrations
 | D14 | Only a logged-in owner/admin manages API keys. Public keys (`rf_pub_`, with allowed origins) are refused on every endpoint until the widget (Phase 5) | A leaked key cannot create more keys. A public key in a web page cannot reach private data. |
 | D15 | Emails are unique across all tenants and stored in lower case | Login needs only email + password. Someone in two companies needs two emails (fine for now). |
 | D16 | Enums are text + a CHECK constraint, not Postgres ENUM types | Adding a value later is a simple migration. |
-| D17 | Migrations: Alembic. A one-time `init` container (Phase 1: `migrate`) runs them before the API and the worker start. It also creates the bucket, the Qdrant collection and the queues | One place prepares the stores, so several API or worker copies never race. |
+| D17 | Migrations: Alembic. A one-time `init` container (Phase 1: `migrate`) runs them before the API and the worker start. It also creates the bucket, the Qdrant collections and the queues | One place prepares the stores, so several API or worker copies never race. |
 | D18 | JSON logs with Python's `logging` and a log context; a plain ASGI middleware writes the access line | No new package. Starlette's `BaseHTTPMiddleware` would not see the tenant that the endpoint adds to the context. |
 | D19 | Errors: `{error: {code, message, request_id}}`; validation errors add `details` (field names, never values) | One format for clients, and passwords are never sent back in an error. |
 | D20 | Login tokens: HS256, 60 minutes, no refresh token yet. Each request checks that the user still exists | A deleted user's token stops working at once. |
@@ -168,6 +179,13 @@ alembic.ini         only for the `alembic` command line (creating new migrations
 | D37 | The API loads the embedder and the reranker at startup and runs each once (warm-up) | The first run of an ONNX model is slow: the first question took 5.9 s, now 0.86 s. |
 | D38 | Streaming: the same `POST /v1/chat` with `"stream": true` returns Server-Sent Events (`start`, `token`..., `done` with citations, or `error`), encoded with FastAPI's `format_sse_event` | One endpoint, as in the spec. Errors after the start cannot change the HTTP status, so they become an `error` event. |
 | D39 | bge-small questions get its "Represent this sentence for searching relevant passages: " instruction; documents get none | Recommended by the model card for short questions vs. long passages. |
+| D40 | Semantic cache threshold 0.98, not the spec's 0.95 | Measured with bge-small: questions with the same meaning scored 0.861-0.994, but "...on weekends?" vs "...on weekdays?" (different answers) scored 0.965. A wrong cached answer is worse than a miss. With Groq, "How much is the late fee for library books?" reused the answer to "What is the late fee for library books?". |
+| D41 | Exact cache in Redis, 24 h: key = tenant + `docs_version` + SHA-256 of (setup + question). The question is cleaned first (lower case, single spaces, no final `?!.`); setup = `top_k` + LLM model. A follow-up is cached by its rewritten question. Exact first, then semantic (Qdrant, same filters) | "What is the FEE?" and "what is the fee" share an answer; user text never appears in a key; anything that would change the answer changes the key. Measured with Groq: 1,296 ms for the first answer, 18 ms for the same question from the cache, and no tokens used. |
+| D42 | Invalidation by `tenants.docs_version`: +1 in the same transaction when a document becomes ready or a ready document is deleted. Old Qdrant entries are deleted at once (best effort); Redis keys simply expire. The worker deletes expired Qdrant entries every hour | No need to find old keys: answers made with older documents can never match again. Qdrant has no automatic expiry. |
+| D43 | Rate limits: a token bucket per API key or user, in one Redis Lua script that uses Redis's own clock. Per minute: requests 60 (pro 600), questions 10 (pro 100); logins: 5 per email, checked before the password. Over the limit: 429 + `Retry-After`; otherwise `X-RateLimit-Limit` / `-Remaining` | Atomic, so several API copies share one limit and server clocks do not matter; short bursts are fine. The login limit stops password guessing and keeps argon2 from using all the CPU (trade-off: someone can make one user wait up to a minute). |
+| D44 | Redis fails open: a fail-fast client (0.5 s timeouts, no retries). When Redis is down, rate limits allow the request (without `X-RateLimit-*` headers) and the exact cache is a miss; the semantic cache (Qdrant) still works | A cache or limiter problem must not take the chat down. redis-py retries 3 times by default, which would make every request wait. |
+| D45 | Cost = tokens x price per million (`LLM_PRICE_*` settings; Groq gpt-oss-20b: $0.075 in, $0.30 out), a Decimal with 6 decimals, saved on each answer (`messages.cost_usd`). A cached answer costs 0 | The free tier costs nothing, but the numbers show what the traffic would cost on a paid plan and how much the cache saves. |
+| D46 | Daily totals per tenant in `usage_daily` (questions, cache hits, tokens, cost): one `INSERT ... ON CONFLICT DO UPDATE` in the same transaction as the answer. `GET /v1/analytics/usage?from=&to=` (UTC days, at most 366, zeros for empty days) reads it; p50/p95 answer times come from the messages (`percentile_cont`, index on `(tenant_id, created_at)`) | Reports read a few rows instead of counting messages, and two answers at the same moment cannot lose a count. Percentiles cannot be added up day by day. |
 
 ## Gotchas
 
@@ -211,11 +229,18 @@ alembic.ini         only for the `alembic` command line (creating new migrations
 - Groq's free tier allows ~2-3 RAG questions per minute (8,000 tokens/min). On a 429 the client
   waits once if Groq asks for 10 s or less; otherwise the API answers 503 `llm_busy` + `Retry-After`.
 - The uv cache (C:) and the project (X:) are on different drives, so uv warns "Failed to hardlink files". It is harmless; set `UV_LINK_MODE=copy` to hide it.
+- Making a Qdrant collection takes ~1-2 s (each payload index adds time). The tests make the
+  collections once per run and delete all points before each test (~0.02 s): the whole suite
+  went from 3 min 42 s to 1 min 35 s.
+- On Windows, connecting to a closed port takes ~2 s (Windows tries again), so with Redis down
+  each Redis call waits for the 0.5 s timeout. The "Redis is down" tests take ~4-6 s there.
+- Chat responses get `X-RateLimit-*` headers from both limits; the questions limit runs last,
+  so its numbers are the ones you see.
+- Analytics days are UTC days.
 
 ## Notes for later phases (from the spec review)
 
-- Phase 4: tenants get a `docs_version` number for the exact-cache key; bump it on every document change. redis-py retries 3 times by default; cache and rate-limit calls may need fail-fast settings. Also rate-limit `/v1/auth/login` (password guessing) and `/v1/chat`. Cost per message: `messages.cost_usd` and `cache_hit` already exist; tokens are already saved.
-- Phase 5: the widget's chat endpoint accepts public keys and checks the `Origin` header against `allowed_origins` (plus CORS). The dashboard may need a way to add members (today only signup creates the owner), and an endpoint that lists a session's messages.
-- Phase 6: the spec compares chunk sizes 300 / 500 / 1000, but bge-small reads at most 512 tokens. The 1000-token test needs a model with a longer input (or compare 300 / 500 only). Compare with/without the reranker, and MiniLM vs. bge-reranker-base. Groq's free tier (1,000 requests/day, 8,000 tokens/min) means eval runs must be paced; the judge can use another Groq model (each model has its own quota).
-- Phase 7: a request-size limit before the upload is read (see Gotchas). Worker metrics: queue depth, job time, failures. Reranking 20 long chunks took ~1-1.5 s on the laptop CPU: measure p95 under load.
+- Phase 5: the widget's chat endpoint accepts public keys and checks the `Origin` header against `allowed_origins` (plus CORS); public keys also need a limit per visitor (IP). The dashboard may need a way to add members (today only signup creates the owner), and an endpoint that lists a session's messages. The usage page reads `GET /v1/analytics/usage`.
+- Phase 6: the spec compares chunk sizes 300 / 500 / 1000, but bge-small reads at most 512 tokens. The 1000-token test needs a model with a longer input (or compare 300 / 500 only). Compare with/without the reranker, and MiniLM vs. bge-reranker-base. Groq's free tier (1,000 requests/day, 8,000 tokens/min) means eval runs must be paced; the judge can use another Groq model (each model has its own quota). Eval runs must skip the answer cache (or they measure the cache, not the RAG pipeline).
+- Phase 7: a request-size limit before the upload is read (see Gotchas). Worker metrics: queue depth, job time, failures. Reranking 20 long chunks took ~1-1.5 s on the laptop CPU: measure p95 under load. Metrics for cache hits and 429s. Requests without a valid login are not rate-limited yet, and logins only per email: add limits per IP.
 - Phase 8: every service address is already a setting, so free managed services can be plugged in.

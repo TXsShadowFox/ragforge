@@ -51,13 +51,20 @@ Checklist of the phases in [PROJECT_SPEC.md](PROJECT_SPEC.md). Updated after eve
       "capital of France" -> "I don't know" without an LLM call; first word after 0.54 s
 - [x] Tests: 206 (145 unit + 61 integration)
 
-## Phase 4: Caching, rate limits, cost tracking
+## Phase 4: Caching, rate limits, cost tracking (done)
 
-- [ ] Exact cache in Redis (tenant + normalized question + docs version)
-- [ ] Semantic cache in Qdrant (similarity > 0.95, configurable)
-- [ ] Invalidate a tenant's cache when its documents change
-- [ ] Token-bucket rate limit (Redis + Lua), `429` + `Retry-After`
-- [ ] Tokens and cost per message; `usage_daily`
+- [x] Exact cache in Redis (tenant + docs version + cleaned question + `top_k` and model), 24 h
+- [x] Semantic cache in Qdrant: similarity >= 0.98, configurable (measured: 0.95 can reuse a wrong answer)
+- [x] Invalidate a tenant's cache when its documents change (`docs_version`; old entries deleted)
+- [x] Token-bucket rate limits (Redis + Lua): requests and questions per key or user, by plan;
+      logins per email; `429` + `Retry-After`
+- [x] Redis down: the chat still works (limits allow, the semantic cache still answers)
+- [x] Tokens and cost per message; `usage_daily`; `GET /v1/analytics/usage` (days, cache hit rate, p50/p95)
+- [x] Real check (Docker, Groq): first answer 1,296 ms, the same question from the cache 18 ms
+      (no tokens); a reworded question hit the semantic cache; the 11th question in a minute got
+      429 (`Retry-After: 4`); the 6th login try got 429
+- [x] Tests: 241 (160 unit + 81 integration). The test setup now empties the Qdrant collections
+      instead of making them again: the suite went from 3 min 42 s to 1 min 35 s
 
 ## Phase 5: Dashboard + embeddable widget
 

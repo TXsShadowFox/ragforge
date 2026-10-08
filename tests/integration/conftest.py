@@ -9,10 +9,12 @@ import os
 import re
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
+from typing import Any
 
 import aio_pika
 import pytest
 from httpx import ASGITransport, AsyncClient
+from qdrant_client import models
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 from testcontainers.community.postgres import PostgresContainer
@@ -30,9 +32,8 @@ from shared.db.migrate import upgrade
 from shared.db.models import Base
 from shared.init import init_stores
 from shared.jobs import DEAD_QUEUE, JOBS_QUEUE, retry_queue
-from shared.vector_store import ensure_collection
-from tests.fakes import FakeEmbedder, fake_ai
-from tests.integration.helpers import running_worker
+from tests.fakes import FakeEmbedder, FakeLLM, fake_ai
+from tests.integration.helpers import chat_client, running_worker
 
 COMPOSE_FILE = Path(__file__).resolve().parents[2] / "docker-compose.yml"
 STARTUP_TIMEOUT_SECONDS = 120
@@ -43,6 +44,16 @@ STORAGE_ACCESS_KEY = "test-access"
 STORAGE_SECRET_KEY = "test-secret-key"
 JWT_SECRET = "integration-test-jwt-secret-of-32-chars-or-more"
 TEST_COLLECTION = "chunks_test"
+TEST_ANSWER_CACHE = "answer_cache_test"
+# Tests make many fast requests, so the limits are very high (the rate limit tests set
+# their own).
+HIGH_RATE_LIMITS: dict[str, Any] = {
+    "rate_limit_free_requests": 100_000,
+    "rate_limit_free_questions": 100_000,
+    "rate_limit_pro_requests": 100_000,
+    "rate_limit_pro_questions": 100_000,
+    "login_attempts_per_minute": 100_000,
+}
 
 
 def compose_image(name: str) -> str:
@@ -148,19 +159,21 @@ def live_settings(
 
 
 @pytest.fixture(scope="session")
-def db_settings(postgres_url: str) -> Settings:
-    """A real Postgres. The other services get addresses that these tests never use."""
+def db_settings(postgres_url: str, redis_url: str) -> Settings:
+    """A real Postgres and Redis (for the rate limits). The other services get addresses
+    that these tests never use."""
     return Settings(
         _env_file=None,
         app_env="test",
         database_url=postgres_url,
-        redis_url="redis://localhost:6379/0",
+        redis_url=redis_url,
         rabbitmq_url="amqp://unused:unused@localhost:5672/",
         qdrant_url="http://localhost:6333",
         s3_endpoint_url="http://localhost:9000",
         s3_access_key="unused",
         s3_secret_key="unused",
         jwt_secret=JWT_SECRET,
+        **HIGH_RATE_LIMITS,
     )
 
 
@@ -197,9 +210,9 @@ async def empty_all_tables(engine: AsyncEngine) -> None:
 
 @pytest.fixture(scope="session")
 def stack_settings(
-    postgres_url: str, rabbitmq_url: str, qdrant_url: str, storage_url: str
+    postgres_url: str, redis_url: str, rabbitmq_url: str, qdrant_url: str, storage_url: str
 ) -> Settings:
-    """Real Postgres, RabbitMQ, Qdrant and storage (Redis is not used yet).
+    """Real Postgres, Redis, RabbitMQ, Qdrant and storage.
 
     Short retry delays and a fast outbox poll, so the tests do not wait long. With the
     fake embedder a "token" is a word, so chunks here are 100 words.
@@ -208,10 +221,11 @@ def stack_settings(
         _env_file=None,
         app_env="test",
         database_url=postgres_url,
-        redis_url="redis://localhost:6379/0",
+        redis_url=redis_url,
         rabbitmq_url=rabbitmq_url,
         qdrant_url=qdrant_url,
         qdrant_collection=TEST_COLLECTION,
+        answer_cache_collection=TEST_ANSWER_CACHE,
         s3_endpoint_url=storage_url,
         s3_access_key=STORAGE_ACCESS_KEY,
         s3_secret_key=STORAGE_SECRET_KEY,
@@ -220,6 +234,7 @@ def stack_settings(
         chunk_overlap_tokens=10,
         ingest_retry_delays_seconds=[1, 1],
         outbox_poll_seconds=0.1,
+        **HIGH_RATE_LIMITS,
     )
 
 
@@ -232,7 +247,7 @@ async def stack(stack_settings: Settings, db_engine: AsyncEngine) -> Settings:
 
 @pytest.fixture
 async def clean_stack(stack: Settings, db_engine: AsyncEngine) -> AsyncIterator[Settings]:
-    """Every store empty at the start of the test: tables, queues and vectors."""
+    """Every store empty at the start of the test: tables, queues, vectors, Redis."""
     await empty_all_tables(db_engine)
     connection = await aio_pika.connect(str(stack.rabbitmq_url))
     async with connection:
@@ -241,8 +256,11 @@ async def clean_stack(stack: Settings, db_engine: AsyncEngine) -> AsyncIterator[
             await (await channel.get_queue(name)).purge()
     clients = Clients.create(stack)
     try:
-        await clients.qdrant.delete_collection(stack.qdrant_collection)
-        await ensure_collection(clients.qdrant, stack.qdrant_collection, FakeEmbedder.dimension)
+        await clients.redis.flushdb()  # cached answers and rate limit buckets
+        # Deleting the points takes ~0.02 s; making the collections again took ~2.6 s.
+        every_point = models.FilterSelector(filter=models.Filter())
+        for collection in [stack.qdrant_collection, stack.answer_cache_collection]:
+            await clients.qdrant.delete(collection, points_selector=every_point)
         yield stack
     finally:
         await clients.aclose()
@@ -274,3 +292,24 @@ async def worker(clean_stack: Settings) -> AsyncIterator[None]:
     """A worker running in the background, with the fake embedder."""
     async with running_worker(clean_stack):
         yield
+
+
+# ----------------------------------------------------------- chat (Phase 3) ----
+
+
+@pytest.fixture
+def chat_settings(clean_stack: Settings) -> Settings:
+    """The fake reranker counts shared words, so a chunk needs one to be "relevant"."""
+    return clean_stack.model_copy(update={"min_rerank_score": 1.0})
+
+
+@pytest.fixture
+def fake_llm() -> FakeLLM:
+    return FakeLLM()
+
+
+@pytest.fixture
+async def chat_api(chat_settings: Settings, fake_llm: FakeLLM) -> AsyncIterator[AsyncClient]:
+    """An HTTP client for the app, using the whole stack and `fake_llm`."""
+    async with chat_client(chat_settings, fake_llm) as client:
+        yield client

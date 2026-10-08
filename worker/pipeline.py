@@ -14,6 +14,7 @@ from dataclasses import dataclass
 
 from sqlalchemy import Select, delete, select, update
 
+from shared.answer_cache import bump_docs_version, forget_old_answers
 from shared.clients import Clients
 from shared.clients.storage import delete_file, download_file
 from shared.config import Settings
@@ -78,13 +79,18 @@ async def ingest_document(context: JobContext, job: Job) -> None:
         clients.qdrant, settings.qdrant_collection, job.tenant_id, job.document_id, vectors
     )
     page_count = len(pages) if file_type is FileType.PDF else None
-    if not await _save_chunks(context, job, chunks, page_count):
+    docs_version = await _save_chunks(context, job, chunks, page_count)
+    if docs_version is None:
         # The document was deleted while we worked: remove the vectors we just wrote.
         await delete_document_vectors(
             clients.qdrant, settings.qdrant_collection, job.tenant_id, job.document_id
         )
         logger.info("The document was deleted while it was processed")
         return
+    # New searchable text: answers cached before it may now be incomplete.
+    await forget_old_answers(
+        clients.qdrant, settings.answer_cache_collection, job.tenant_id, docs_version
+    )
     logger.info("Document is ready", extra={"chunk_count": len(chunks), "page_count": page_count})
 
 
@@ -174,10 +180,11 @@ async def _embed(
 
 async def _save_chunks(
     context: JobContext, job: Job, chunks: Sequence[TextChunk], page_count: int | None
-) -> bool:
-    """Replace the document's chunks and mark it ready, in one transaction.
+) -> int | None:
+    """Replace the document's chunks, mark it ready and raise the tenant's docs_version,
+    in one transaction. Returns the new docs_version.
 
-    False if the document is no longer being processed (it was deleted meanwhile).
+    None if the document is no longer being processed (it was deleted meanwhile).
     """
     async with context.clients.sessions() as session, session.begin():
         # Lock the row: a delete request waits until we are done, and we see it if it came first.
@@ -187,7 +194,7 @@ async def _save_chunks(
             .with_for_update()
         )
         if status is not DocumentStatus.PROCESSING:
-            return False
+            return None
         await session.execute(delete(Chunk).where(Chunk.document_id == job.document_id))
         session.add_all(
             Chunk(
@@ -211,4 +218,4 @@ async def _save_chunks(
                 error=None,
             )
         )
-    return True
+        return await bump_docs_version(session, job.tenant_id)

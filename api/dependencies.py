@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.ai import AIServices
 from api.chat.service import ChatService
 from api.readiness import DependencyCheck
+from shared.answer_cache import AnswerCache
 from shared.clients import Clients
 from shared.config import Settings
 
@@ -46,8 +47,16 @@ async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
         yield session
 
 
+def get_answer_cache(request: Request) -> AnswerCache:
+    """The answer cache (Redis + Qdrant), created at startup."""
+    cache: AnswerCache = request.app.state.answer_cache
+    return cache
+
+
 def get_chat_service(request: Request) -> ChatService:
-    return ChatService(get_app_settings(request), get_clients(request), get_ai(request))
+    return ChatService(
+        get_app_settings(request), get_clients(request), get_ai(request), get_answer_cache(request)
+    )
 
 
 SettingsDep = Annotated[Settings, Depends(get_app_settings)]

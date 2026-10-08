@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Self
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
 from sqlalchemy import select
 
@@ -12,9 +12,10 @@ from api.auth.keys import generate_api_key, normalize_origin
 from api.auth.principal import AdminUser
 from api.dependencies import SessionDep
 from api.errors import not_found
+from api.ratelimit import limit_requests
 from shared.db.models import ApiKey, ApiKeyKind
 
-router = APIRouter(prefix="/v1/api-keys", tags=["api-keys"])
+router = APIRouter(prefix="/v1/api-keys", tags=["api-keys"], dependencies=[Depends(limit_requests)])
 
 MAX_ORIGINS = 20
 

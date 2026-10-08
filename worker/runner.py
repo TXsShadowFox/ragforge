@@ -7,6 +7,7 @@ import signal
 
 import aio_pika
 
+from shared.answer_cache import forget_expired_answers
 from shared.clients import Clients
 from shared.config import Settings
 from shared.embeddings import Embedder, FastEmbedEmbedder
@@ -19,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 # The model adds a start token and an end token to every chunk.
 SPECIAL_TOKENS = 2
+CACHE_CLEANUP_SECONDS = 60 * 60
 
 
 async def run_worker(
@@ -55,22 +57,36 @@ async def run_worker(
         context = JobContext(settings=settings, clients=clients, embedder=embedder)
         consumer = JobConsumer(context, exchange, settings.ingest_retry_delays_seconds)
         consumer_tag = await queue.consume(consumer.handle)
-        relay = asyncio.create_task(
-            relay_forever(clients.sessions, exchange, settings.outbox_poll_seconds)
-        )
+        background = [
+            asyncio.create_task(
+                relay_forever(clients.sessions, exchange, settings.outbox_poll_seconds)
+            ),
+            asyncio.create_task(_clean_answer_cache_forever(clients, settings)),
+        ]
         logger.info("The worker is ready")
 
         await stop.wait()
         logger.info("Stopping: the current job (if any) will finish first")
         await queue.cancel(consumer_tag)
         await consumer.wait_until_idle()
-        relay.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await relay
+        for task in background:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
     finally:
         await connection.close()
         await clients.aclose()
     logger.info("The worker stopped")
+
+
+async def _clean_answer_cache_forever(clients: Clients, settings: Settings) -> None:
+    """Delete expired cached answers every hour (Qdrant has no automatic expiry)."""
+    while True:
+        try:
+            await forget_expired_answers(clients.qdrant, settings.answer_cache_collection)
+        except Exception:
+            logger.warning("Could not clean the answer cache; trying again later", exc_info=True)
+        await asyncio.sleep(CACHE_CLEANUP_SECONDS)
 
 
 def _check_chunk_size(settings: Settings, embedder: Embedder) -> None:

@@ -12,7 +12,7 @@ import uuid
 from collections.abc import AsyncIterator, Mapping
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Request, status
+from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import StreamingResponse
 from fastapi.sse import format_sse_event
 from pydantic import BaseModel, Field, StringConstraints
@@ -21,10 +21,16 @@ from api.auth.principal import PrivateAccess
 from api.chat.service import ChatSessionNotFoundError
 from api.dependencies import ChatServiceDep
 from api.errors import ApiError, not_found
+from api.ratelimit import limit_questions, limit_requests
 from shared.llm import LLMBusyError, LLMError
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/v1", tags=["chat"])
+# Each question counts twice: as a request, and against the (lower) questions limit.
+router = APIRouter(
+    prefix="/v1",
+    tags=["chat"],
+    dependencies=[Depends(limit_requests), Depends(limit_questions)],
+)
 
 
 class ChatRequest(BaseModel):
@@ -58,6 +64,7 @@ class ChatResponse(BaseModel):
     answer: str
     citations: list[CitationOut]
     usage: UsageOut
+    cache_hit: bool = Field(description="True if the answer came from the cache (no LLM call).")
     latency_ms: int
 
 

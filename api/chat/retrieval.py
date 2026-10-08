@@ -57,6 +57,7 @@ def reciprocal_rank_fusion(rankings: Sequence[Sequence[uuid.UUID]]) -> list[uuid
 
 async def find_sources(
     query: str,
+    vector: list[float],
     tenant_id: uuid.UUID,
     keep: int,
     *,
@@ -64,8 +65,10 @@ async def find_sources(
     clients: Clients,
     ai: AIServices,
 ) -> list[Source]:
-    """The `keep` most relevant chunks for `query`, best first. Empty: nothing relevant."""
-    vector = await asyncio.to_thread(ai.embedder.embed_query, query)
+    """The `keep` most relevant chunks for `query` (whose vector is `vector`), best first.
+
+    Empty: nothing relevant.
+    """
     limit = settings.search_candidates
     async with clients.sessions() as session:
         by_meaning, by_words = await asyncio.gather(

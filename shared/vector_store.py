@@ -24,7 +24,13 @@ class ChunkVector:
 
 
 async def ensure_collection(client: AsyncQdrantClient, name: str, dimension: int) -> None:
-    """Create the collection and its payload indexes if needed. Safe to call many times."""
+    """Create the chunks collection and its payload indexes if needed. Safe to call again."""
+    await create_tenant_collection(client, name, dimension)
+    await client.create_payload_index(name, "document_id", models.PayloadSchemaType.KEYWORD)
+
+
+async def create_tenant_collection(client: AsyncQdrantClient, name: str, dimension: int) -> None:
+    """A cosine collection with a `tenant_id` index, if it does not exist yet."""
     if not await client.collection_exists(name):
         await client.create_collection(
             name,
@@ -45,7 +51,10 @@ async def ensure_collection(client: AsyncQdrantClient, name: str, dimension: int
             type=models.KeywordIndexType.KEYWORD, is_tenant=True
         ),
     )
-    await client.create_payload_index(name, "document_id", models.PayloadSchemaType.KEYWORD)
+
+
+def tenant_condition(tenant_id: uuid.UUID) -> models.FieldCondition:
+    return models.FieldCondition(key="tenant_id", match=models.MatchValue(value=str(tenant_id)))
 
 
 async def save_document_vectors(

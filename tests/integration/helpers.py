@@ -1,17 +1,21 @@
-"""Helpers for the API tests: sign up, log in, keys, uploads, and a background worker."""
+"""Helpers for the API tests: sign up, log in, keys, uploads, chat, and a background worker."""
 
 import asyncio
+import json
+import socket
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from httpx import AsyncClient, Response
+from httpx import ASGITransport, AsyncClient, Response
 
+from api.main import create_app
 from shared.config import Settings
 from shared.embeddings import Embedder
-from tests.fakes import FakeEmbedder
+from tests.documents import handbook_page, make_pdf
+from tests.fakes import FakeEmbedder, FakeLLM, fake_ai
 from worker.runner import run_worker
 
 PASSWORD = "correct-horse-battery-staple"
@@ -121,3 +125,50 @@ async def running_worker(
     finally:
         stop.set()
         await asyncio.wait_for(task, timeout=WAIT_SECONDS)
+
+
+@asynccontextmanager
+async def chat_client(settings: Settings, llm: FakeLLM | None = None) -> AsyncIterator[AsyncClient]:
+    """An HTTP client for an app that uses the fake models (and the given fake LLM)."""
+    app = create_app(settings, ai=fake_ai(llm))
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        yield client
+
+
+async def upload_handbook(client: AsyncClient, account: Account, settings: Settings) -> None:
+    """The 50-page handbook: only page N mentions "zoneN" (see tests/documents.py)."""
+    pdf = make_pdf([handbook_page(page) for page in range(1, 51)])
+    async with running_worker(settings):
+        document = await upload_and_wait(client, account, "handbook.pdf", pdf)
+    assert document["status"] == "ready", document["error"]
+
+
+async def ask(
+    client: AsyncClient, account: Account, question: str, **options: Any
+) -> dict[str, Any]:
+    response = await client.post(
+        "/v1/chat", json={"question": question, **options}, headers=account.headers
+    )
+    assert response.status_code == 200, response.text
+    answer: dict[str, Any] = response.json()
+    return answer
+
+
+def sse_events(stream_text: str) -> list[tuple[str, dict[str, Any]]]:
+    """Parse a Server-Sent Events body into (event name, data) pairs."""
+    events = []
+    for block in stream_text.strip().split("\n\n"):
+        fields = dict(line.split(": ", 1) for line in block.split("\n"))
+        events.append((fields["event"], json.loads(fields["data"])))
+    return events
+
+
+def with_redis_down(settings: Settings) -> Settings:
+    """The same settings, but Redis is "down": nothing listens at its address."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))  # a free port; closed again when the block ends
+        port = probe.getsockname()[1]
+    return settings.model_copy(update={"redis_url": f"redis://127.0.0.1:{port}/0"})

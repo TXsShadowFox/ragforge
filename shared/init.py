@@ -1,8 +1,8 @@
 """Prepare every data store once: `python -m shared.init`.
 
-Runs the database migrations and creates the storage bucket, the Qdrant collection and
-the RabbitMQ queues. Every step is safe to run again. The Docker `init` service and
-`make dev` run it before the API and the worker start.
+Runs the database migrations and creates the storage bucket, the Qdrant collections
+(chunks and the answer cache) and the RabbitMQ queues. Every step is safe to run again.
+The Docker `init` service and `make dev` run it before the API and the worker start.
 """
 
 import asyncio
@@ -10,6 +10,7 @@ import logging
 
 import aio_pika
 
+from shared.answer_cache import ensure_answer_collection
 from shared.clients import Clients
 from shared.clients.storage import ensure_bucket
 from shared.config import Settings, get_settings
@@ -31,6 +32,9 @@ async def init_stores(settings: Settings, *, vector_dimension: int | None = None
         await upgrade(clients.db)
         await ensure_bucket(clients.s3, settings.s3_bucket)
         await ensure_collection(clients.qdrant, settings.qdrant_collection, vector_dimension)
+        await ensure_answer_collection(
+            clients.qdrant, settings.answer_cache_collection, vector_dimension
+        )
         connection = await aio_pika.connect(str(settings.rabbitmq_url))
         async with connection:
             channel = await connection.channel()

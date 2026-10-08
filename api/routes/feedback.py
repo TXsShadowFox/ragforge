@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, StringConstraints
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
@@ -12,9 +12,10 @@ from sqlalchemy.dialects.postgresql import insert
 from api.auth.principal import PrivateAccess
 from api.dependencies import SessionDep
 from api.errors import not_found
+from api.ratelimit import limit_requests
 from shared.db.models import Feedback, FeedbackRating, Message, MessageRole
 
-router = APIRouter(prefix="/v1/messages", tags=["chat"])
+router = APIRouter(prefix="/v1/messages", tags=["chat"], dependencies=[Depends(limit_requests)])
 
 
 class FeedbackRequest(BaseModel):

@@ -8,7 +8,7 @@ Rules:
 """
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar
@@ -121,6 +121,9 @@ class Tenant(Base):
     plan: Mapped[TenantPlan] = mapped_column(
         _text_enum(TenantPlan, "tenant_plan"), server_default=TenantPlan.FREE.value
     )
+    # +1 whenever the searchable documents change (one becomes ready or is deleted).
+    # Cached answers remember it, so answers made with older documents are never reused.
+    docs_version: Mapped[int] = mapped_column(server_default=text("0"))
     created_at: Mapped[CreatedAt]
 
 
@@ -242,7 +245,10 @@ class Message(Base):
     """
 
     __tablename__ = "messages"
-    __table_args__ = (Index("ix_messages_session_id_id", "session_id", "id"),)
+    __table_args__ = (
+        Index("ix_messages_session_id_id", "session_id", "id"),
+        Index("ix_messages_tenant_id_created_at", "tenant_id", "created_at"),  # analytics
+    )
 
     id: Mapped[UuidPk]
     tenant_id: Mapped[TenantId]
@@ -256,8 +262,8 @@ class Message(Base):
     latency_ms: Mapped[int | None]  # answers: from the question to the full answer
     tokens_in: Mapped[int | None]  # answers: tokens the LLM read (the prompt)
     tokens_out: Mapped[int | None]  # answers: tokens the LLM wrote
-    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))  # filled in Phase 4
-    cache_hit: Mapped[bool] = mapped_column(server_default=false())  # used in Phase 4
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))  # answers: the LLM's price
+    cache_hit: Mapped[bool] = mapped_column(server_default=false())  # answers: from the cache
     created_at: Mapped[CreatedAt]
 
 
@@ -275,3 +281,19 @@ class Feedback(Base):
     comment: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[CreatedAt]
     updated_at: Mapped[UpdatedAt]
+
+
+class UsageDaily(Base):
+    """How much a tenant used the chat on one day (UTC). Updated with every answer."""
+
+    __tablename__ = "usage_daily"
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True
+    )
+    day: Mapped[date] = mapped_column(primary_key=True)
+    questions: Mapped[int] = mapped_column(server_default=text("0"))
+    cache_hits: Mapped[int] = mapped_column(server_default=text("0"))
+    tokens_in: Mapped[int] = mapped_column(BigInteger, server_default=text("0"))
+    tokens_out: Mapped[int] = mapped_column(BigInteger, server_default=text("0"))
+    cost_usd: Mapped[Decimal] = mapped_column(Numeric(14, 6), server_default=text("0"))

@@ -21,7 +21,7 @@ from api.auth.keys import hash_api_key, is_api_key
 from api.auth.tokens import read_access_token
 from api.dependencies import SessionDep, SettingsDep
 from api.errors import ApiError, forbidden, unauthorized
-from shared.db.models import ApiKey, ApiKeyKind, User, UserRole
+from shared.db.models import ApiKey, ApiKeyKind, Tenant, TenantPlan, User, UserRole
 from shared.logging import bind_log_context
 
 # Save `last_used_at` at most this often, so a busy key does not write on every request.
@@ -38,9 +38,15 @@ class UserPrincipal:
     """A dashboard user who logged in."""
 
     tenant_id: uuid.UUID
+    plan: TenantPlan
     user_id: uuid.UUID
     email: str
     role: UserRole
+
+    @property
+    def rate_key(self) -> str:
+        """Names this caller's rate limit buckets."""
+        return f"user:{self.user_id}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,8 +54,14 @@ class ApiKeyPrincipal:
     """A program that sent an API key."""
 
     tenant_id: uuid.UUID
+    plan: TenantPlan
     api_key_id: uuid.UUID
     kind: ApiKeyKind
+
+    @property
+    def rate_key(self) -> str:
+        """Names this caller's rate limit buckets: each API key has its own."""
+        return f"key:{self.api_key_id}"
 
 
 Principal = UserPrincipal | ApiKeyPrincipal
@@ -101,11 +113,20 @@ AdminUser = Annotated[UserPrincipal, Depends(require_admin)]
 
 
 async def _from_api_key(session: AsyncSession, key: str) -> ApiKeyPrincipal:
-    api_key = await session.scalar(select(ApiKey).where(ApiKey.key_hash == hash_api_key(key)))
-    if api_key is None or api_key.revoked_at is not None:
+    found = (
+        await session.execute(
+            select(ApiKey, Tenant.plan)
+            .join(Tenant, Tenant.id == ApiKey.tenant_id)
+            .where(ApiKey.key_hash == hash_api_key(key))
+        )
+    ).one_or_none()
+    if found is None or found.ApiKey.revoked_at is not None:
         raise unauthorized("invalid_api_key", "This API key is wrong or was revoked.")
+    api_key, plan = found
     await _save_last_used(session, api_key)
-    return ApiKeyPrincipal(tenant_id=api_key.tenant_id, api_key_id=api_key.id, kind=api_key.kind)
+    return ApiKeyPrincipal(
+        tenant_id=api_key.tenant_id, plan=plan, api_key_id=api_key.id, kind=api_key.kind
+    )
 
 
 async def _save_last_used(session: AsyncSession, api_key: ApiKey) -> None:
@@ -122,11 +143,18 @@ async def _from_login_token(session: AsyncSession, token: str, secret: SecretStr
         user_id = read_access_token(token, secret)
     except jwt.InvalidTokenError as exc:
         raise _bad_login_token() from exc
-    user = await session.get(User, user_id)
-    if user is None:  # the user was deleted after logging in
+    found = (
+        await session.execute(
+            select(User, Tenant.plan)
+            .join(Tenant, Tenant.id == User.tenant_id)
+            .where(User.id == user_id)
+        )
+    ).one_or_none()
+    if found is None:  # the user was deleted after logging in
         raise _bad_login_token()
+    user, plan = found
     return UserPrincipal(
-        tenant_id=user.tenant_id, user_id=user.id, email=user.email, role=user.role
+        tenant_id=user.tenant_id, plan=plan, user_id=user.id, email=user.email, role=user.role
     )
 
 
