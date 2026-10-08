@@ -8,16 +8,16 @@ the API key lookup here (by hash) and login (by email).
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, TypeGuard
 
 import jwt
-from fastapi import Depends
+from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.auth.keys import hash_api_key, is_api_key
+from api.auth.keys import hash_api_key, is_api_key, normalize_origin
 from api.auth.tokens import read_access_token
 from api.dependencies import SessionDep, SettingsDep
 from api.errors import ApiError, forbidden, unauthorized
@@ -57,6 +57,7 @@ class ApiKeyPrincipal:
     plan: TenantPlan
     api_key_id: uuid.UUID
     kind: ApiKeyKind
+    allowed_origins: tuple[str, ...]  # public keys: the websites that may use the key
 
     @property
     def rate_key(self) -> str:
@@ -65,6 +66,11 @@ class ApiKeyPrincipal:
 
 
 Principal = UserPrincipal | ApiKeyPrincipal
+
+
+def is_public_key(principal: Principal) -> TypeGuard[ApiKeyPrincipal]:
+    """A public key (rf_pub_): it sits in a web page, so anyone can see it."""
+    return isinstance(principal, ApiKeyPrincipal) and principal.kind is ApiKeyKind.PUBLIC
 
 
 async def get_principal(
@@ -91,8 +97,8 @@ async def get_principal(
 async def require_private_access(
     principal: Annotated[Principal, Depends(get_principal)],
 ) -> Principal:
-    """A user or a secret key. Public keys only work for the chat widget (Phase 5)."""
-    if isinstance(principal, ApiKeyPrincipal) and principal.kind is ApiKeyKind.PUBLIC:
+    """A user or a secret key. Public keys only work for the chat widget's endpoints."""
+    if is_public_key(principal):
         raise forbidden(
             "public_key_not_allowed", "Public keys can only be used by the chat widget."
         )
@@ -108,7 +114,35 @@ async def require_admin(principal: Annotated[Principal, Depends(get_principal)])
     return principal
 
 
+async def require_widget_access(
+    principal: Annotated[Principal, Depends(get_principal)], request: Request
+) -> Principal:
+    """A user, a secret key, or a public key used from one of its allowed websites.
+
+    Browsers send the page's website in the `Origin` header. Other programs can fake it,
+    so this only stops other websites from using the key; the rate limits do the rest.
+    """
+    if is_public_key(principal) and _origin(request) not in principal.allowed_origins:
+        raise forbidden(
+            "origin_not_allowed",
+            "This website may not use this key. Add it to the key's allowed origins.",
+        )
+    return principal
+
+
+def _origin(request: Request) -> str | None:
+    """The website that sent the request, written like the allowed origins, or None."""
+    origin = request.headers.get("origin")
+    if origin is None:
+        return None
+    try:
+        return normalize_origin(origin)
+    except ValueError:  # e.g. "null" from a local file or a sandboxed frame
+        return None
+
+
 PrivateAccess = Annotated[Principal, Depends(require_private_access)]
+WidgetAccess = Annotated[Principal, Depends(require_widget_access)]
 AdminUser = Annotated[UserPrincipal, Depends(require_admin)]
 
 
@@ -125,7 +159,11 @@ async def _from_api_key(session: AsyncSession, key: str) -> ApiKeyPrincipal:
     api_key, plan = found
     await _save_last_used(session, api_key)
     return ApiKeyPrincipal(
-        tenant_id=api_key.tenant_id, plan=plan, api_key_id=api_key.id, kind=api_key.kind
+        tenant_id=api_key.tenant_id,
+        plan=plan,
+        api_key_id=api_key.id,
+        kind=api_key.kind,
+        allowed_origins=tuple(api_key.allowed_origins),
     )
 
 

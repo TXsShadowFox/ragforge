@@ -42,6 +42,8 @@ RUN useradd --create-home --uid 10001 ragforge \
 
 WORKDIR /app
 COPY --from=builder --chown=ragforge:ragforge /app/.venv /app/.venv
+# The chat widget, served by the API at GET /widget.js (WIDGET_FILE, from /app).
+COPY --chown=ragforge:ragforge widget/widget.js ./widget/widget.js
 
 # HF_HUB_DISABLE_PROGRESS_BARS: no progress bars in the logs when the model is downloaded.
 ENV PATH="/app/.venv/bin:${PATH}" \

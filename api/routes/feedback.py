@@ -1,4 +1,7 @@
-"""Feedback: a thumbs up or down for an answer. Sending it again replaces the old one."""
+"""Feedback: a thumbs up or down for an answer. Sending it again replaces the old one.
+
+The chat widget sends it too, so public keys work here (from their allowed websites).
+"""
 
 import uuid
 from datetime import datetime
@@ -9,13 +12,17 @@ from pydantic import BaseModel, StringConstraints
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 
-from api.auth.principal import PrivateAccess
+from api.auth.principal import WidgetAccess, require_widget_access
 from api.dependencies import SessionDep
 from api.errors import not_found
 from api.ratelimit import limit_requests
 from shared.db.models import Feedback, FeedbackRating, Message, MessageRole
 
-router = APIRouter(prefix="/v1/messages", tags=["chat"], dependencies=[Depends(limit_requests)])
+router = APIRouter(
+    prefix="/v1/messages",
+    tags=["chat"],
+    dependencies=[Depends(require_widget_access), Depends(limit_requests)],
+)
 
 
 class FeedbackRequest(BaseModel):
@@ -32,7 +39,7 @@ class FeedbackResponse(BaseModel):
 
 @router.post("/{message_id}/feedback")
 async def give_feedback(
-    message_id: uuid.UUID, body: FeedbackRequest, principal: PrivateAccess, session: SessionDep
+    message_id: uuid.UUID, body: FeedbackRequest, principal: WidgetAccess, session: SessionDep
 ) -> FeedbackResponse:
     """Rate an answer (the `message_id` of a chat response)."""
     answer_id = await session.scalar(

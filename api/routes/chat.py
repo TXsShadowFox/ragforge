@@ -17,7 +17,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.sse import format_sse_event
 from pydantic import BaseModel, Field, StringConstraints
 
-from api.auth.principal import PrivateAccess
+from api.auth.principal import WidgetAccess, require_widget_access
 from api.chat.service import ChatSessionNotFoundError
 from api.dependencies import ChatServiceDep
 from api.errors import ApiError, not_found
@@ -25,11 +25,16 @@ from api.ratelimit import limit_questions, limit_requests
 from shared.llm import LLMBusyError, LLMError
 
 logger = logging.getLogger(__name__)
-# Each question counts twice: as a request, and against the (lower) questions limit.
+# The widget's endpoint: public keys work here, from their allowed websites (checked
+# first). Each question counts twice: as a request, and against the questions limit.
 router = APIRouter(
     prefix="/v1",
     tags=["chat"],
-    dependencies=[Depends(limit_requests), Depends(limit_questions)],
+    dependencies=[
+        Depends(require_widget_access),
+        Depends(limit_requests),
+        Depends(limit_questions),
+    ],
 )
 
 
@@ -79,7 +84,7 @@ class ChatResponse(BaseModel):
     },
 )
 async def chat(
-    body: ChatRequest, request: Request, principal: PrivateAccess, service: ChatServiceDep
+    body: ChatRequest, request: Request, principal: WidgetAccess, service: ChatServiceDep
 ) -> ChatResponse | StreamingResponse:
     """Answer a question from your documents, with citations (document, page, snippet)."""
     try:

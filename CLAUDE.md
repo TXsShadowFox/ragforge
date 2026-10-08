@@ -25,25 +25,30 @@ focus is system design, backend engineering and RAG quality, backed by tests and
 
 ## How to run
 
-Needs Docker Desktop, [uv](https://docs.astral.sh/uv/) and GNU make
-(Windows: `winget install -e --id ezwinports.make`). On Windows, Docker Desktop needs WSL 2:
+Needs Docker Desktop, [uv](https://docs.astral.sh/uv/), Node.js 24+ (for the dashboard) and
+GNU make (Windows: `winget install -e --id ezwinports.make`). On Windows, Docker Desktop needs WSL 2:
 from an **admin** PowerShell run `winget install -e --id Microsoft.WSL`, then
 `winget install -e --id Docker.DockerDesktop`. Open a new terminal after installing, so it sees the new PATH.
 
 | Command | What it does |
 |---|---|
-| `make setup` | install packages, create `.env` from `.env.example`, install git hooks |
-| `make up` | start everything in Docker (API + worker + data services + monitoring), wait until healthy; a one-time `init` container prepares the stores first |
+| `make setup` | install the Python and dashboard packages, create `.env` from `.env.example`, install git hooks |
+| `make up` | start everything in Docker (API + worker + dashboard + data services + monitoring), wait until healthy; a one-time `init` container prepares the stores first |
 | `make dev` | start only the data services, prepare the stores (`python -m shared.init`), run the API on your machine with auto-reload |
 | `make worker` | run the ingestion worker on your machine (next to `make dev`, in a second terminal) |
+| `make frontend` | run the dashboard on your machine with hot reload (next to `make dev`, in a third terminal) |
+| `make widget-demo` | serve `widget/demo.html` at http://localhost:5500: a test website for the chat widget |
 | `make migrate` | update the database in `.env` to the newest migration |
-| `make test` / `make test-unit` | all tests / only the unit tests (no Docker needed) |
-| `make lint` / `make fmt` | ruff + mypy / auto-format and auto-fix |
+| `make test` / `make test-unit` | all tests / only the unit tests (no Docker needed); both include the dashboard's tests |
+| `make e2e` | the whole flow in a real browser (Playwright, Edge on Windows): needs `make up` and the Groq key |
+| `make lint` / `make fmt` | ruff, mypy, ESLint, Prettier, tsc / auto-format and auto-fix |
 | `make logs` / `make ps` / `make down` | follow logs / container status / stop (data is kept) |
 
 | Local service | URL (logins are in `.env`) |
 |---|---|
+| Dashboard | http://localhost:3000 |
 | API (interactive docs at `/docs`) | http://localhost:8000 |
+| Test website for the widget (`make widget-demo`) | http://localhost:5500/demo.html |
 | RabbitMQ management UI | http://localhost:15672 |
 | Qdrant web UI | http://localhost:6333/dashboard |
 | RustFS console | http://localhost:9001 |
@@ -59,8 +64,9 @@ api/                FastAPI app: main.py (factory + lifespan), dependencies.py, 
   chat/             retrieval (2 searches + RRF + rerank), prompts (rules, citations), service
                     (one chat turn: rewrite, cache, search, LLM, save), usage (cost, daily totals)
   routes/           one module per area: system, auth, api_keys, me, documents, chat, feedback,
-                    analytics
+                    analytics, widget (GET /widget.js)
   ratelimit.py      token buckets in Redis (one Lua script): limit_requests, limit_questions
+                    (+ a per-visitor limit for public keys)
   errors.py         the one JSON error format (ApiError, unauthorized, forbidden, not_found)
   middleware.py     request ID, one JSON access log line per request, safe 500s
 shared/             used by the API and the worker
@@ -87,7 +93,12 @@ tests/integration/  real services via testcontainers (marked `integration`); hel
 tests/fakes.py      fakes: FakeEmbedder (a "token" is a word), FakeReranker (shared words),
                     FakeLLM (answers from source [1], records calls), FailingLLM; fake_ai()
 tests/documents.py  make_pdf(), make_docx(), handbook_page() for test files
-frontend/ widget/ loadtests/ eval/   later phases (each has a README)
+frontend/           the dashboard (Next.js 16): src/app (pages, and route handlers under /api),
+                    src/components (one view per page), src/lib (backend.ts = the /api/v1 proxy,
+                    session.ts = the login cookie, sse.ts, api-client.ts), src/proxy.ts (login
+                    redirects); tests/ (Vitest, also the widget), e2e/ (Playwright); AGENTS.md
+widget/             widget.js (the chat widget: one plain JS file, no build), demo.html (a test site)
+loadtests/ eval/    later phases (each has a README)
 alembic.ini         only for the `alembic` command line (creating new migrations)
 ```
 
@@ -116,7 +127,8 @@ alembic.ini         only for the `alembic` command line (creating new migrations
 - Every table has `tenant_id`, and every query filters by tenant. Only two queries skip it on
   purpose, because they find the tenant: login (by email) and the API key lookup (by hash).
 - Protect routes with the dependencies in `api/auth/principal.py`: `PrivateAccess` (a user or
-  a secret key) or `AdminUser` (a logged-in owner/admin). Public keys are refused everywhere for now.
+  a secret key), `AdminUser` (a logged-in owner/admin), or `WidgetAccess` (also public keys, from
+  their allowed websites). `WidgetAccess` only on what the widget needs: chat and feedback.
 - Errors: raise `ApiError` or `unauthorized()` / `forbidden()` / `not_found()` from `api/errors.py`.
 - Logs: `logging.getLogger(__name__)`, extra fields with `extra={...}`. Never log passwords, keys
   or tokens. CPU-heavy work (like argon2) runs in `asyncio.to_thread`.
@@ -135,6 +147,18 @@ alembic.ini         only for the `alembic` command line (creating new migrations
   the commit. Otherwise the cache keeps giving answers made from the old documents.
 - Redis is a helper: code that uses it must keep working (allow, or "not in the cache") when
   Redis is down.
+- Dashboard: Next.js 16 changed many APIs. Before writing Next.js code, read the guide in
+  `frontend/node_modules/next/dist/docs/` (see `frontend/AGENTS.md`).
+- Dashboard pages are client components that load their data from `/api/v1/...` (the proxy in
+  `src/lib/backend.ts`). The login token never reaches JavaScript, and the server never reads
+  the cookie while it renders a page.
+- In effects, fetch with `.then()` and an `active` flag, and reload with a counter state
+  (see `documents-view.tsx`): the React Compiler lint refuses a state change it cannot prove
+  happens later.
+- The widget is plain JavaScript (`// @ts-check`, checked by the dashboard's `tsc`) with no
+  dependencies. Text from the API or the page goes in with `textContent`, never `innerHTML`.
+- Dashboard checks (CI runs them): `npm run lint`, `format:check`, `typecheck`, `npm test`,
+  `npm run build`. Prettier settings are in the repo root (`.prettierrc.json`) for `widget/` too.
 
 ## Decisions
 
@@ -186,6 +210,15 @@ alembic.ini         only for the `alembic` command line (creating new migrations
 | D44 | Redis fails open: a fail-fast client (0.5 s timeouts, no retries). When Redis is down, rate limits allow the request (without `X-RateLimit-*` headers) and the exact cache is a miss; the semantic cache (Qdrant) still works | A cache or limiter problem must not take the chat down. redis-py retries 3 times by default, which would make every request wait. |
 | D45 | Cost = tokens x price per million (`LLM_PRICE_*` settings; Groq gpt-oss-20b: $0.075 in, $0.30 out), a Decimal with 6 decimals, saved on each answer (`messages.cost_usd`). A cached answer costs 0 | The free tier costs nothing, but the numbers show what the traffic would cost on a paid plan and how much the cache saves. |
 | D46 | Daily totals per tenant in `usage_daily` (questions, cache hits, tokens, cost): one `INSERT ... ON CONFLICT DO UPDATE` in the same transaction as the answer. `GET /v1/analytics/usage?from=&to=` (UTC days, at most 366, zeros for empty days) reads it; p50/p95 answer times come from the messages (`percentile_cont`, index on `(tenant_id, created_at)`) | Reports read a few rows instead of counting messages, and two answers at the same moment cannot lose a count. Percentiles cannot be added up day by day. |
+| D47 | Dashboard = a backend-for-frontend: the browser only talks to Next.js. The API login token lives in an httpOnly cookie (SameSite=Lax, Secure on HTTPS); `/api/v1/[...path]` forwards to the API's `/v1/...` with `Authorization: Bearer`, streaming bodies both ways. Changes need an `Origin` equal to the dashboard's own host | A script injected into the page cannot steal the token, and the dashboard needs no CORS. SameSite=Lax alone is not enough: another port or subdomain is the "same site". |
+| D48 | Pages render in the browser (client components that fetch in effects). The server never reads the cookie while it renders, so Next.js 16's Cache Components stays on (as the template has it) without `<Suspense>` everywhere. `proxy.ts` only redirects pages (no cookie: `/login`) and never runs for `/api` | Cache Components becomes the only mode in Next.js 17. Next.js keeps the whole body of a request that passes through `proxy.ts` in memory and cuts it at 10 MB, which would break uploads. |
+| D49 | Public keys work for the chat and feedback only (`WidgetAccess`), and only when the browser's `Origin` is in the key's allowed origins (normalized first). The check runs before the rate limits. No `Origin`, or `null`, is refused | `Origin` stops other websites from using the key; programs outside a browser can fake it, so the rate limits protect the rest. |
+| D50 | CORS: any origin, no credentials; GET/POST/DELETE; `Authorization` and `Content-Type`; `Retry-After`, `X-RateLimit-*` and `X-Request-ID` exposed. CORS is the outermost middleware | The API uses no cookies, so allowing every website exposes nothing, and the widget must work on customer sites. Outermost: even a 500 can be read by the widget. |
+| D51 | A public key has two question limits: the whole website (the key, by plan) and each visitor (IP address, 5 a minute). The visitor's numbers go in the headers | All visitors of a website share one public key: one visitor must not use up everyone's questions. |
+| D52 | The widget: one plain JS file (no build, no libraries, ~20 KB) served by the API at `/widget.js` (cached 5 min). Shadow DOM; text only via `textContent`; answers stream (fetch + an SSE reader, as EventSource cannot POST); refuses `rf_live_` keys; the conversation lives in `sessionStorage`. The session ID is kept only after a complete answer, and a 404 starts a new conversation | One tag works on any site, and neither side can break the other's styles. A document cannot inject code into a customer's page. A failed first answer creates no session on the server, so keeping its ID would make every later question fail. |
+| D53 | Upload status: the documents page asks for the first page again every 3 s, only while a document is uploaded, processing or deleting (pages from "Load more" are kept, by uuidv7 order) | No new server code (no push from the worker), and at most ~20 requests a minute, well under the 60/min limit. |
+| D54 | Frontend tools: Next.js 16.4 (Turbopack), React 19.3, TypeScript 5.9, Tailwind 4.3 (`@tailwindcss/turbopack`), Recharts 3, ESLint 9 + Prettier, Vitest 5 + happy-dom, Playwright (the installed Edge on Windows). Node 24 in Docker and CI | The versions Next.js's own template uses: TypeScript 7 (the new Go compiler) and ESLint 10 are newer than what Next.js and its lint plugins support. Edge needs no browser download. |
+| D55 | Analytics days also carry their own p50/p95 answer times (`percentile_cont` grouped by UTC day) | The latency chart needs one value per day; percentiles cannot be built from daily totals. |
 
 ## Gotchas
 
@@ -235,12 +268,30 @@ alembic.ini         only for the `alembic` command line (creating new migrations
 - On Windows, connecting to a closed port takes ~2 s (Windows tries again), so with Redis down
   each Redis call waits for the 0.5 s timeout. The "Redis is down" tests take ~4-6 s there.
 - Chat responses get `X-RateLimit-*` headers from both limits; the questions limit runs last,
-  so its numbers are the ones you see.
+  so its numbers are the ones you see (with a public key: the visitor's limit).
 - Analytics days are UTC days.
+- Smart App Control allows the native parts of the dashboard tools (the Next.js compiler,
+  Tailwind's engine, lightningcss, TypeScript 7's tsc.exe): checked on 2026-10-08.
+- Next.js 16: `middleware.ts` is now `proxy.ts`, and `next dev` (re)writes `frontend/AGENTS.md`:
+  keep it committed. `next typegen` creates the route types (`RouteContext`, `LayoutProps`)
+  that `tsc` needs, so `npm run typecheck` runs it first.
+- `npm audit` shows 5 "high" warnings: all one advisory in `braces`, used only by ESLint's
+  Next.js plugin (a dev tool), with no fixed version (npm's "fix" downgrades to Next.js 14's
+  rules). The app's own packages have none: `npm audit --omit=dev` (CI checks it).
+- npm says ESLint 9 is no longer supported, but eslint-config-next's plugins (react, import,
+  jsx-a11y) only support ESLint up to 9. Keep 9 until Next.js moves.
+- Vitest 5 supports Node 22, 24 and 26, not 25 (npm warns `EBADENGINE`). It works on 25;
+  Docker and CI use Node 24.
+- Next.js compresses responses, which would hold back a streamed answer. The proxy sends event
+  streams with `Cache-Control: no-cache, no-transform` (the compressor skips `no-transform`).
+- With Cache Components, Next.js keeps visited pages alive (hidden) after `router.push()`.
+  So log in and log out with a full page load (`window.location.assign`): no typed password
+  or old data stays in memory. Tests can find the hidden copies too (use exact labels).
+- Playwright's locators look inside open Shadow DOMs, so the e2e test finds the widget's parts.
+- In a happy-dom test, `import.meta.url` is not a file URL: read files from `process.cwd()`.
 
 ## Notes for later phases (from the spec review)
 
-- Phase 5: the widget's chat endpoint accepts public keys and checks the `Origin` header against `allowed_origins` (plus CORS); public keys also need a limit per visitor (IP). The dashboard may need a way to add members (today only signup creates the owner), and an endpoint that lists a session's messages. The usage page reads `GET /v1/analytics/usage`.
-- Phase 6: the spec compares chunk sizes 300 / 500 / 1000, but bge-small reads at most 512 tokens. The 1000-token test needs a model with a longer input (or compare 300 / 500 only). Compare with/without the reranker, and MiniLM vs. bge-reranker-base. Groq's free tier (1,000 requests/day, 8,000 tokens/min) means eval runs must be paced; the judge can use another Groq model (each model has its own quota). Eval runs must skip the answer cache (or they measure the cache, not the RAG pipeline).
-- Phase 7: a request-size limit before the upload is read (see Gotchas). Worker metrics: queue depth, job time, failures. Reranking 20 long chunks took ~1-1.5 s on the laptop CPU: measure p95 under load. Metrics for cache hits and 429s. Requests without a valid login are not rate-limited yet, and logins only per email: add limits per IP.
-- Phase 8: every service address is already a setting, so free managed services can be plugged in.
+- Phase 6: the spec compares chunk sizes 300 / 500 / 1000, but bge-small reads at most 512 tokens. The 1000-token test needs a model with a longer input (or compare 300 / 500 only). Compare with/without the reranker, and MiniLM vs. bge-reranker-base. Groq's free tier (1,000 requests/day, 8,000 tokens/min) means eval runs must be paced; the judge can use another Groq model (each model has its own quota). Eval runs must skip the answer cache (or they measure the cache, not the RAG pipeline). The "answer quality" page (`GET /v1/analytics/quality`: feedback, eval scores) belongs here; widget and playground ratings already arrive.
+- Phase 7: a request-size limit before the upload is read (see Gotchas). Worker metrics: queue depth, job time, failures. Reranking 20 long chunks took ~1-1.5 s on the laptop CPU: measure p95 under load. Metrics for cache hits and 429s. Requests without a valid login are not rate-limited yet, and logins only per email: add limits per IP. A Content-Security-Policy for the dashboard (Next.js needs nonces for it). The e2e test in CI needs a fake OpenAI-compatible LLM server.
+- Phase 8: every service address is already a setting, so free managed services can be plugged in. Behind a proxy, run uvicorn with `--proxy-headers --forwarded-allow-ips`, or every widget visitor has the proxy's IP (one shared visitor limit). Set `PUBLIC_API_URL`; the dashboard cookie becomes Secure by itself on HTTPS. Serve `widget.js` from a CDN. Still missing: team members (invites), and public keys that answer from only some documents (today a public key answers from all of the tenant's documents).

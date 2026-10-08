@@ -7,24 +7,28 @@
 
 COMPOSE = docker compose
 PY = uv run python -m
+NPM = npm --prefix frontend
 DATA_SERVICES = postgres redis rabbitmq qdrant rustfs
 
 .DEFAULT_GOAL := help
-.PHONY: help setup up down dev worker migrate logs ps test test-unit lint fmt
+.PHONY: help setup up down dev worker frontend widget-demo migrate logs ps test test-unit e2e lint fmt
 
 help:
 	@echo Commands:
-	@echo   make setup     - install Python packages, create .env, install git hooks
-	@echo   make up        - start everything in Docker: API, worker, data services, monitoring
+	@echo   make setup     - install Python and dashboard packages, create .env, install git hooks
+	@echo   make up        - start everything in Docker: API, worker, dashboard, data, monitoring
 	@echo   make down      - stop everything, data is kept
 	@echo   make dev       - data services in Docker, API on your machine with auto-reload
 	@echo   make worker    - run the ingestion worker on your machine, next to make dev
+	@echo   make frontend  - run the dashboard on your machine at port 3000, next to make dev
+	@echo   make widget-demo - serve widget/demo.html at http://localhost:5500, a test website
 	@echo   make migrate   - bring the database in .env up to the newest version
 	@echo   make logs      - follow the logs of all containers
 	@echo   make ps        - show container status
 	@echo   make test      - run all tests, integration tests need Docker
 	@echo   make test-unit - run only the fast unit tests, no Docker needed
-	@echo   make lint      - check style and types: ruff + mypy
+	@echo   make e2e       - browser test of the whole flow, needs make up and the Groq key
+	@echo   make lint      - check style and types: ruff, mypy, eslint, prettier, tsc
 	@echo   make fmt       - auto-format and auto-fix the code
 
 # Create .env from the template, only if it does not exist yet.
@@ -34,6 +38,7 @@ help:
 
 setup: .env
 	uv sync
+	$(NPM) ci
 	$(PY) pre_commit install
 
 up: .env
@@ -50,6 +55,12 @@ dev: .env
 worker: .env
 	$(PY) worker
 
+frontend:
+	$(NPM) run dev
+
+widget-demo:
+	$(PY) http.server 5500 --directory widget
+
 migrate: .env
 	$(PY) shared.db.migrate
 
@@ -61,15 +72,24 @@ ps:
 
 test:
 	$(PY) pytest
+	$(NPM) test
 
 test-unit:
 	$(PY) pytest -m "not integration"
+	$(NPM) test
+
+e2e:
+	$(NPM) run e2e
 
 lint:
 	$(PY) ruff check .
 	$(PY) ruff format --check .
 	$(PY) mypy
+	$(NPM) run lint
+	$(NPM) run format:check
+	$(NPM) run typecheck
 
 fmt:
 	$(PY) ruff format .
 	$(PY) ruff check --fix .
+	$(NPM) run format

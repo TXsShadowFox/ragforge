@@ -11,7 +11,9 @@
 .pytest_cache
 tests
 frontend
-widget
+# The API serves the widget's JavaScript (GET /widget.js); nothing else from widget/.
+widget/*
+!widget/widget.js
 loadtests
 eval
 infra

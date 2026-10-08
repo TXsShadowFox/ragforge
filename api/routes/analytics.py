@@ -4,12 +4,14 @@ The daily numbers come from `usage_daily`; the answer times (p50 and p95) come f
 messages themselves, because percentiles cannot be added up day by day. Days are UTC.
 """
 
+import uuid
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, Date, Select, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth.principal import PrivateAccess
 from api.dependencies import SessionDep
@@ -32,6 +34,8 @@ class DayUsage(BaseModel):
     tokens_in: int
     tokens_out: int
     cost_usd: float
+    latency_p50_ms: float | None = Field(description="Half of the day's answers were faster.")
+    latency_p95_ms: float | None = Field(description="95% of the day's answers were faster.")
 
 
 class UsageTotals(BaseModel):
@@ -76,20 +80,12 @@ async def usage(
         )
     )
     by_day = {row.day: row for row in rows}
-    days = [_day_usage(start + timedelta(days=n), by_day) for n in range((end - start).days + 1)]
-    p50, p95 = (
-        await session.execute(
-            select(
-                func.percentile_cont(0.5).within_group(Message.latency_ms),
-                func.percentile_cont(0.95).within_group(Message.latency_ms),
-            ).where(
-                Message.tenant_id == principal.tenant_id,
-                Message.role == MessageRole.ASSISTANT,
-                Message.created_at >= datetime.combine(start, time.min, UTC),
-                Message.created_at < datetime.combine(end + timedelta(days=1), time.min, UTC),
-            )
-        )
-    ).one()
+    times_by_day = await _answer_times_by_day(session, principal.tenant_id, start, end)
+    days = [
+        _day_usage(start + timedelta(days=n), by_day, times_by_day)
+        for n in range((end - start).days + 1)
+    ]
+    p50, p95 = (await session.execute(_answer_times(principal.tenant_id, start, end))).one()
     questions = sum(day.questions for day in days)
     cache_hits = sum(day.cache_hits for day in days)
     return UsageReport(
@@ -103,21 +99,57 @@ async def usage(
             tokens_in=sum(day.tokens_in for day in days),
             tokens_out=sum(day.tokens_out for day in days),
             cost_usd=round(sum(day.cost_usd for day in days), 6),
-            latency_p50_ms=None if p50 is None else round(p50, 1),
-            latency_p95_ms=None if p95 is None else round(p95, 1),
+            latency_p50_ms=_ms(p50),
+            latency_p95_ms=_ms(p95),
         ),
     )
 
 
-def _day_usage(day: date, by_day: dict[date, UsageDaily]) -> DayUsage:
+Percentiles = tuple[float | None, float | None]
+
+
+def _answer_times(
+    tenant_id: uuid.UUID, start: date, end: date
+) -> Select[float | None, float | None]:
+    """p50 and p95 of the tenant's answer times, from the start of `start` to the end of
+    `end` (UTC)."""
+    return select(
+        func.percentile_cont(0.5).within_group(Message.latency_ms),
+        func.percentile_cont(0.95).within_group(Message.latency_ms),
+    ).where(
+        Message.tenant_id == tenant_id,
+        Message.role == MessageRole.ASSISTANT,
+        Message.created_at >= datetime.combine(start, time.min, UTC),
+        Message.created_at < datetime.combine(end + timedelta(days=1), time.min, UTC),
+    )
+
+
+async def _answer_times_by_day(
+    session: AsyncSession, tenant_id: uuid.UUID, start: date, end: date
+) -> dict[date, Percentiles]:
+    utc_day: ColumnElement[date] = func.date(func.timezone("UTC", Message.created_at), type_=Date)
+    rows = await session.execute(
+        _answer_times(tenant_id, start, end).add_columns(utc_day).group_by(utc_day)
+    )
+    return {day: (p50, p95) for p50, p95, day in rows}
+
+
+def _day_usage(
+    day: date, by_day: dict[date, UsageDaily], times_by_day: dict[date, Percentiles]
+) -> DayUsage:
     row = by_day.get(day)
-    if row is None:
-        return DayUsage(day=day, questions=0, cache_hits=0, tokens_in=0, tokens_out=0, cost_usd=0)
+    p50, p95 = times_by_day.get(day, (None, None))
     return DayUsage(
         day=day,
-        questions=row.questions,
-        cache_hits=row.cache_hits,
-        tokens_in=row.tokens_in,
-        tokens_out=row.tokens_out,
-        cost_usd=float(row.cost_usd),
+        questions=row.questions if row else 0,
+        cache_hits=row.cache_hits if row else 0,
+        tokens_in=row.tokens_in if row else 0,
+        tokens_out=row.tokens_out if row else 0,
+        cost_usd=float(row.cost_usd) if row else 0.0,
+        latency_p50_ms=_ms(p50),
+        latency_p95_ms=_ms(p95),
     )
+
+
+def _ms(value: float | None) -> float | None:
+    return None if value is None else round(value, 1)

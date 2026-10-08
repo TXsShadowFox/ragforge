@@ -11,13 +11,24 @@ from contextlib import asynccontextmanager
 from importlib.metadata import version
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from api.ai import AIServices, load_ai_services
 from api.errors import install_error_handlers
-from api.middleware import RequestContextMiddleware
+from api.middleware import REQUEST_ID_HEADER, RequestContextMiddleware
 from api.ratelimit import RateLimiter
 from api.readiness import build_checks
-from api.routes import analytics, api_keys, auth, chat, documents, feedback, me, system
+from api.routes import (
+    analytics,
+    api_keys,
+    auth,
+    chat,
+    documents,
+    feedback,
+    me,
+    system,
+    widget,
+)
 from shared.answer_cache import AnswerCache
 from shared.clients import Clients
 from shared.config import Settings, get_settings
@@ -54,6 +65,23 @@ def create_app(settings: Settings, *, ai: AIServices | None = None) -> FastAPI:
     app.state.ai_override = ai
     install_error_handlers(app)
     app.add_middleware(RequestContextMiddleware)
+    # Added last, so it runs first (even before a crash is turned into a 500). Browsers on
+    # other websites (the chat widget) may call the API. We use no cookies, so this
+    # exposes nothing: the login token or key is in a header. Public keys still check
+    # the website (api/auth/principal.py).
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["GET", "POST", "DELETE"],
+        allow_headers=["Authorization", "Content-Type"],
+        expose_headers=[
+            "Retry-After",
+            "X-RateLimit-Limit",
+            "X-RateLimit-Remaining",
+            REQUEST_ID_HEADER,
+        ],
+        max_age=600,
+    )
     app.include_router(system.router)
     app.include_router(auth.router)
     app.include_router(api_keys.router)
@@ -62,6 +90,7 @@ def create_app(settings: Settings, *, ai: AIServices | None = None) -> FastAPI:
     app.include_router(chat.router)
     app.include_router(feedback.router)
     app.include_router(analytics.router)
+    app.include_router(widget.router)
     return app
 
 

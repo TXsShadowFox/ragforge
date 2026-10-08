@@ -66,10 +66,21 @@ Checklist of the phases in [PROJECT_SPEC.md](PROJECT_SPEC.md). Updated after eve
 - [x] Tests: 241 (160 unit + 81 integration). The test setup now empties the Qdrant collections
       instead of making them again: the suite went from 3 min 42 s to 1 min 35 s
 
-## Phase 5: Dashboard + embeddable widget
+## Phase 5: Dashboard + embeddable widget (done)
 
-- [ ] Next.js dashboard: login, upload with live status, API keys, chat playground, analytics
-- [ ] Widget: one `<script>` tag, public key with a domain allow-list
+- [x] Next.js 16 dashboard: sign up and log in, documents (drag and drop, live status, delete),
+      API keys (create, shown once, revoke, embed code), chat playground (streaming, sources,
+      cache hits, ratings, follow-ups), analytics charts (questions/day, p50/p95, cache hit rate, cost)
+- [x] The login token stays in an httpOnly cookie; the dashboard's server forwards `/api/v1/...`
+      to the API (uploads and streamed answers pass straight through); same-origin check for changes
+- [x] Widget: one `<script>` tag, plain JS (no build, no libraries), Shadow DOM, streamed answers
+      with sources, ratings; public key with a domain allow-list (`Origin`), CORS
+- [x] Per-visitor question limit for public keys, next to the website's limit
+- [x] Docker: a `frontend` container in `make up`; CI: a dashboard job (lint, types, tests, build)
+- [x] Real check (Docker, Groq, Edge): the Playwright test signs up, uploads a file, waits for
+      "ready", creates a public key, opens a plain HTML page on another address
+      (`localhost:5500`), and asks the widget: answer with the right fact and its source (34 s)
+- [x] Tests: Python 258 (165 unit + 93 integration), dashboard and widget 51 (Vitest), 1 end-to-end
 
 ## Phase 6: Observability + evaluation
 

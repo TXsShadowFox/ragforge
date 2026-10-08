@@ -106,6 +106,12 @@ class Settings(BaseSettings):
     rate_limit_pro_requests: PositiveInt = 600
     rate_limit_pro_questions: PositiveInt = 100
     login_attempts_per_minute: PositiveInt = 5
+    # Questions per minute from one widget visitor (IP address) with a public key. The
+    # key's own limit (the whole website's) applies too.
+    rate_limit_visitor_questions: PositiveInt = 5
+
+    # --- Chat widget: its JavaScript is served at GET /widget.js (path from the working dir) ---
+    widget_file: Path = Path("widget/widget.js")
 
     # --- Cost: the LLM's price in US dollars per million tokens (Groq gpt-oss-20b) ---
     llm_price_input_per_million: float = Field(default=0.075, ge=0)

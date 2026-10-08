@@ -15,11 +15,13 @@ permissions:
 
 env:
   UV_VERSION: "0.11.18"
+  NODE_VERSION: "24"
+  NEXT_TELEMETRY_DISABLED: "1"
 
 jobs:
   lint:
     name: Lint and type-check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       # setup-uv has no short major tags after v7 (no `@v10`), so use the full version.
@@ -33,7 +35,7 @@ jobs:
 
   test:
     name: Tests (unit + integration)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0
@@ -49,9 +51,33 @@ jobs:
       # Integration tests start real containers with testcontainers (Docker is preinstalled).
       - run: uv run python -m pytest -v
 
+  frontend:
+    name: Dashboard and widget
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      # Only the packages the app ships; the dev tools have a known, harmless warning
+      # (see CLAUDE.md, Gotchas).
+      - run: npm audit --omit=dev
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm run typecheck
+      # The dashboard's helpers and the widget (in a simulated browser).
+      - run: npm test
+      - run: npm run build
+
   docker:
     name: Docker build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - name: Validate docker-compose.yml
@@ -63,5 +89,12 @@ jobs:
           context: .
           file: infra/docker/Dockerfile
           push: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+      - name: Build the dashboard image
+        uses: docker/build-push-action@v7
+        with:
+          context: frontend
+          push: false
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend

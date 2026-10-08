@@ -125,6 +125,10 @@ async def test_answer_times_are_percentiles_of_your_answers_in_the_range(
     # Ten answers: 100, 200, ..., 1000 ms. p50 lies between 500 and 600, p95 between 900 and 1000.
     assert report["totals"]["latency_p50_ms"] == 550.0
     assert report["totals"]["latency_p95_ms"] == 955.0
+    # The same per day: all ten answers are from today (UTC); other days have none.
+    by_day = {day["day"]: (day["latency_p50_ms"], day["latency_p95_ms"]) for day in report["days"]}
+    assert by_day.pop(now.date().isoformat()) == (550.0, 955.0)
+    assert set(by_day.values()) == {(None, None)}
 
 
 async def test_the_longest_range_is_366_days(api: AsyncClient) -> None:

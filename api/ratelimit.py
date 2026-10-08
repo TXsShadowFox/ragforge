@@ -16,7 +16,7 @@ from typing import Annotated
 from fastapi import Depends, Request, Response, status
 from redis.asyncio import Redis
 
-from api.auth.principal import Principal, get_principal
+from api.auth.principal import Principal, get_principal, is_public_key
 from api.dependencies import SettingsDep
 from api.errors import ApiError
 from shared.config import Settings
@@ -124,17 +124,31 @@ async def limit_questions(
     principal: Annotated[Principal, Depends(get_principal)],
     limiter: RateLimiterDep,
     settings: SettingsDep,
+    request: Request,
     response: Response,
 ) -> None:
-    """Chat questions have their own, lower limit: each one can cost an LLM call."""
+    """Chat questions have their own, lower limit: each one can cost an LLM call.
+
+    A public key is shared by every visitor of a website, so each visitor (IP address)
+    also has a small limit: one visitor cannot use up the whole website's questions.
+    Its numbers are the ones in the headers, as they are what the visitor can do.
+    """
+    show_key_numbers = True
+    if is_public_key(principal):
+        visitor = request.client.host if request.client else "unknown"
+        bucket = f"questions:{principal.rate_key}:visitor:{visitor}"
+        _check(await limiter.hit(bucket, settings.rate_limit_visitor_questions), response)
+        show_key_numbers = False
     limit = questions_per_minute(principal.plan, settings)
-    _check(await limiter.hit(f"questions:{principal.rate_key}", limit), response)
+    decision = await limiter.hit(f"questions:{principal.rate_key}", limit)
+    _check(decision, response, set_headers=show_key_numbers)
 
 
-def _check(decision: Decision | None, response: Response) -> None:
+def _check(decision: Decision | None, response: Response, *, set_headers: bool = True) -> None:
     if decision is None:  # Redis is down: allow, and send no numbers that we do not know
         return
     if not decision.allowed:
         raise too_many_requests(decision)
-    response.headers["X-RateLimit-Limit"] = str(decision.limit)
-    response.headers["X-RateLimit-Remaining"] = str(decision.remaining)
+    if set_headers:
+        response.headers["X-RateLimit-Limit"] = str(decision.limit)
+        response.headers["X-RateLimit-Remaining"] = str(decision.remaining)

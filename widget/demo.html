@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Acme College help center (RAGForge widget demo)</title>
+    <style>
+      body {
+        max-width: 720px;
+        margin: 40px auto;
+        padding: 0 16px;
+        color: #1f2937;
+        font:
+          16px/1.6 Georgia,
+          "Times New Roman",
+          serif;
+      }
+      h1 {
+        color: #7c2d12;
+      }
+      form {
+        display: grid;
+        gap: 10px;
+        margin: 24px 0;
+        padding: 16px;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #fafaf9;
+      }
+      label {
+        display: grid;
+        gap: 4px;
+        font:
+          14px system-ui,
+          sans-serif;
+      }
+      input {
+        padding: 6px 8px;
+        font:
+          14px ui-monospace,
+          monospace;
+      }
+      button {
+        justify-self: start;
+        padding: 6px 14px;
+        font:
+          14px system-ui,
+          sans-serif;
+      }
+      code,
+      pre {
+        font:
+          13px ui-monospace,
+          monospace;
+      }
+      pre {
+        overflow-x: auto;
+        padding: 12px;
+        border-radius: 6px;
+        background: #f3f4f6;
+      }
+      #status {
+        font:
+          14px system-ui,
+          sans-serif;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Acme College help center</h1>
+    <p>
+      This page plays the part of a customer's website. It runs on its own address
+      (<code>http://localhost:5500</code>), not on the RAGForge API, like a real website.
+    </p>
+    <p>A real website adds the chat with one tag:</p>
+    <pre><code>&lt;script src="http://localhost:8000/widget.js" data-api-key="rf_pub_..." async&gt;&lt;/script&gt;</code></pre>
+
+    <form id="setup" method="get">
+      <label>
+        <span>
+          Public key (create one in the dashboard, with
+          <code>http://localhost:5500</code> as an allowed origin)
+        </span>
+        <input name="key" placeholder="rf_pub_..." required autocomplete="off" />
+      </label>
+      <label>
+        RAGForge API address
+        <input name="api" value="http://localhost:8000" />
+      </label>
+      <button type="submit">Add the chat widget</button>
+    </form>
+    <p id="status" role="status"></p>
+
+    <script>
+      // Adds the widget's one script tag from ?key=...&api=..., the way a website would.
+      const params = new URLSearchParams(location.search);
+      const key = params.get("key");
+      const api = (params.get("api") || "http://localhost:8000").replace(/\/+$/, "");
+      const form = document.getElementById("setup");
+      form.elements.api.value = api;
+      if (key) {
+        form.elements.key.value = key;
+        const tag = document.createElement("script");
+        tag.src = `${api}/widget.js`;
+        tag.async = true;
+        tag.dataset.apiKey = key;
+        tag.dataset.title = "Ask Acme College";
+        tag.dataset.greeting = "Hi! Ask me about the college rules and services.";
+        tag.addEventListener("error", () => {
+          document.getElementById("status").textContent =
+            `Could not load ${tag.src}. Is the API running?`;
+        });
+        document.body.append(tag);
+        document.getElementById("status").textContent =
+          "The chat bubble is in the bottom right corner.";
+      }
+    </script>
+  </body>
+</html>
