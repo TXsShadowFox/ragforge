@@ -82,12 +82,29 @@ Checklist of the phases in [PROJECT_SPEC.md](PROJECT_SPEC.md). Updated after eve
       (`localhost:5500`), and asks the widget: answer with the right fact and its source (34 s)
 - [x] Tests: Python 258 (165 unit + 93 integration), dashboard and widget 51 (Vitest), 1 end-to-end
 
-## Phase 6: Observability + evaluation
+## Phase 6: Observability + evaluation (done)
 
-- [ ] Prometheus metrics: requests, latency, queue depth, failures, cache hit rate, LLM latency
-- [ ] OpenTelemetry tracing: API, retrieval, rerank, LLM
-- [ ] Grafana dashboard JSON in `infra/grafana/`
-- [ ] Eval set (30-50 Q&A): hit rate@5, MRR, faithfulness; compare chunk sizes and the reranker
+- [x] Prometheus metrics: requests and latency per route, LLM time (and first piece), tokens,
+      cost, errors, search step times, answers by source (cache hit rate), 429s; worker (port
+      8001): jobs by outcome, job time, outbox backlog; queue depth from RabbitMQ's own plugin
+- [x] OpenTelemetry tracing (Jaeger): one trace per request with a span per step (embed, cache,
+      vector and keyword search, rerank, LLM, save); the trace follows a job through the outbox
+      and RabbitMQ into the worker (download, parse, chunk, embed, store); `trace_id` in every log line
+- [x] Grafana dashboard JSON in `infra/grafana/` (30 panels; Prometheus and Jaeger data sources)
+- [x] Answer quality in the dashboard: `GET /v1/analytics/quality` (thumbs up/down per day,
+      the latest thumbs-down answers)
+- [x] Eval (`make eval`): 5 sample documents, 48 questions; hit rate@1/3/5, MRR@10, faithfulness
+      and correctness (LLM judge); 7 settings compared (chunks of 300/500/1000 tokens, with and
+      without the reranker, vector/keyword/hybrid): [eval/RESULTS.md](eval/RESULTS.md)
+- [x] Results: hybrid search + reranker puts the evidence first for 97% (MRR 0.986; without the
+      reranker 89%, 0.940); answers: faithfulness 1.00, correctness 1.00, "I don't know" 12 of 12
+- [x] The eval found 2 bugs, both fixed: gpt-oss citations like `【1】` were lost; the "I don't
+      know" gate (-5) wrongly stopped 5 of 36 answerable questions. Gate -10: correctness
+      0.83 -> 1.00 (the cost: 747 -> 1,442 input tokens per answer)
+- [x] Real check (Docker): all Prometheus targets up, every Grafana panel shows live data;
+      traces: the reranker is the slowest step before the LLM (0.7-1.1 s), and the first request
+      after a start takes 10.3 s
+- [x] Tests: Python 297 (194 unit + 103 integration), dashboard and widget 52 (Vitest)
 
 ## Phase 7: Load testing + hardening
 
@@ -105,9 +122,9 @@ Checklist of the phases in [PROJECT_SPEC.md](PROJECT_SPEC.md). Updated after eve
 
 - [ ] All phases done, tests passing, CI green
 - [ ] Tenant isolation proven by tests
-- [ ] Eval report with numbers
+- [x] Eval report with numbers
 - [ ] Load test report with before/after numbers
-- [ ] Grafana dashboard
+- [x] Grafana dashboard
 - [ ] README + SYSTEM_DESIGN.md + architecture diagram
 - [ ] Live demo link
 - [ ] Resume bullet points + 10 interview questions with answers

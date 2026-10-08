@@ -88,9 +88,10 @@ class Settings(BaseSettings):
     # --- Search and chat ---
     rerank_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
     search_candidates: int = Field(default=20, ge=1, le=100)  # from each search, then reranked
-    # Below this reranker score a chunk is "not relevant". Measured for the default reranker:
-    # relevant chunks scored -0.4 to 9.7, unrelated ones about -11 (CLAUDE.md, D33).
-    min_rerank_score: float = -5.0
+    # Below this reranker score a chunk is "not relevant". Measured for the default reranker
+    # (make eval): off-topic questions scored -11.0 to -11.1, answerable ones -9.7 to 6.7
+    # (CLAUDE.md, D33). On-topic questions without an answer are left to the LLM.
+    min_rerank_score: float = -10.0
     chat_history_messages: int = Field(default=6, ge=0, le=50)
 
     # --- Answer cache ---
@@ -112,6 +113,14 @@ class Settings(BaseSettings):
 
     # --- Chat widget: its JavaScript is served at GET /widget.js (path from the working dir) ---
     widget_file: Path = Path("widget/widget.js")
+
+    # --- Monitoring ---
+    # Where traces go (OTLP over HTTP, like http://jaeger:4318/v1/traces). Empty: no tracing.
+    otlp_traces_endpoint: str | None = None
+    # Share of requests that get a trace: 1.0 = all (fine here), lower for heavy traffic.
+    trace_sample_ratio: float = Field(default=1.0, ge=0, le=1)
+    # The worker serves its Prometheus metrics on this port (the API serves them at /metrics).
+    worker_metrics_port: int = Field(default=8001, ge=1, le=65535)
 
     # --- Cost: the LLM's price in US dollars per million tokens (Groq gpt-oss-20b) ---
     llm_price_input_per_million: float = Field(default=0.075, ge=0)

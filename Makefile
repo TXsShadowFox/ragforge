@@ -11,7 +11,7 @@ NPM = npm --prefix frontend
 DATA_SERVICES = postgres redis rabbitmq qdrant rustfs
 
 .DEFAULT_GOAL := help
-.PHONY: help setup up down dev worker frontend widget-demo migrate logs ps test test-unit e2e lint fmt
+.PHONY: help setup up down dev worker frontend widget-demo migrate logs ps test test-unit e2e eval lint fmt
 
 help:
 	@echo Commands:
@@ -28,6 +28,7 @@ help:
 	@echo   make test      - run all tests, integration tests need Docker
 	@echo   make test-unit - run only the fast unit tests, no Docker needed
 	@echo   make e2e       - browser test of the whole flow, needs make up and the Groq key
+	@echo   make eval      - measure search and answer quality into eval/RESULTS.md, Docker and Groq
 	@echo   make lint      - check style and types: ruff, mypy, eslint, prettier, tsc
 	@echo   make fmt       - auto-format and auto-fix the code
 
@@ -80,6 +81,9 @@ test-unit:
 
 e2e:
 	$(NPM) run e2e
+
+eval:
+	$(PY) eval.run
 
 lint:
 	$(PY) ruff check .

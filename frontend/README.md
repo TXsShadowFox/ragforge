@@ -6,7 +6,8 @@ The RAGForge dashboard (Next.js 16, React 19, TypeScript, Tailwind CSS 4):
 - **Documents**: upload by drag and drop, with live status (uploaded, processing, ready, failed)
 - **Playground**: chat with your documents: streamed answers, sources with pages, cache hits, ratings
 - **API keys**: create a secret key (servers) or a public key (the chat widget), shown once; revoke
-- **Analytics**: questions per day, answer times (p50, p95), cache hit rate and cost
+- **Analytics**: questions per day, answer times (p50, p95), cache hit rate and cost, and the
+  answer quality (thumbs up and down, the latest bad answers)
 
 ## How it talks to the API
 

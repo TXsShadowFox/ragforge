@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { chartRows, lastDays } from "@/lib/analytics";
+import { chartRows, lastDays, ratingRows } from "@/lib/analytics";
 import { hasPending, mergeFirstPage } from "@/lib/documents";
 import {
   fileType,
@@ -76,6 +76,14 @@ describe("analytics", () => {
         p95: 745.6,
         cost: 3.4e-5,
       },
+    ]);
+  });
+});
+
+describe("ratings", () => {
+  it("turns rated days into chart rows", () => {
+    expect(ratingRows([{ day: "2026-10-08", up: 3, down: 1 }])).toEqual([
+      { label: "Oct 8", up: 3, down: 1 },
     ]);
   });
 });

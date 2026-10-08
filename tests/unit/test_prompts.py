@@ -11,6 +11,7 @@ from api.chat.prompts import (
     answer_messages,
     cited_numbers,
     is_no_answer,
+    normalize_citations,
     rewrite_messages,
     source_location,
 )
@@ -106,3 +107,17 @@ def test_cited_numbers(answer: str, numbers: list[int]) -> None:
 )
 def test_is_no_answer(answer: str, expected: bool) -> None:
     assert is_no_answer(answer) is expected
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [
+        ("It is called **NFC-Secure**【1】.", "It is called **NFC-Secure**[1]."),
+        ("Fees rise【2†L3-L5】 and fall【3】.", "Fees rise[2] and fall[3]."),
+        ("Already fine [1].", "Already fine [1]."),
+    ],
+)
+def test_citations_in_gpt_oss_style_become_plain(answer: str, expected: str) -> None:
+    # Found by the evaluation: gpt-oss sometimes cites like 【1】, and those sources were lost.
+    assert normalize_citations(answer) == expected
+    assert cited_numbers(normalize_citations("A【1】 and B【2†L1-L2】."), source_count=3) == [1, 2]

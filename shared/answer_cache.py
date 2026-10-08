@@ -38,6 +38,12 @@ def normalize_question(question: str) -> str:
     return " ".join(question.lower().split()).rstrip(" ?!.")
 
 
+def answer_setup(settings: Settings, top_k: int, llm_model: str) -> str:
+    """A cache key's `setup`: what changes an answer besides the documents and the question.
+    After a change (like a new MIN_RERANK_SCORE), old answers are not reused."""
+    return f"top{top_k}:{llm_model}:{settings.rerank_model}:{settings.min_rerank_score:g}"
+
+
 @dataclass(frozen=True, slots=True)
 class CacheKey:
     tenant_id: uuid.UUID

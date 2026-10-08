@@ -4,6 +4,7 @@ ingest: download -> read the text -> clean -> chunk -> embed -> Qdrant + Postgre
 delete: Qdrant points -> stored file -> Postgres rows (chunks go with the document)
 
 Both are safe to run twice: RabbitMQ and the outbox may deliver a job more than once.
+Each step is a span in the trace of the request that made the job.
 """
 
 import asyncio
@@ -14,6 +15,7 @@ from dataclasses import dataclass
 
 from sqlalchemy import Select, delete, select, update
 
+from shared import metrics
 from shared.answer_cache import bump_docs_version, forget_old_answers
 from shared.clients import Clients
 from shared.clients.storage import delete_file, download_file
@@ -22,6 +24,7 @@ from shared.db.models import Chunk, Document, DocumentStatus, JobType
 from shared.embeddings import Embedder
 from shared.file_types import FileType
 from shared.jobs import Job
+from shared.tracing import span
 from shared.vector_store import ChunkVector, delete_document_vectors, save_document_vectors
 from worker.chunking import TextChunk, chunk_document, chunk_id
 from worker.cleaning import clean_text
@@ -62,24 +65,32 @@ async def ingest_document(context: JobContext, job: Job) -> None:
         return
 
     file_type = FileType(document.mime_type)
-    data = await download_file(clients.s3, settings.s3_bucket, document.storage_key)
-    pages = await asyncio.to_thread(_read_pages, data, file_type)
-    chunks = await asyncio.to_thread(
-        chunk_document,
-        pages,
-        context.embedder.count_tokens,
-        settings.chunk_size_tokens,
-        settings.chunk_overlap_tokens,
-    )
+    with span("ingest.download", bytes=document.size_bytes):
+        data = await download_file(clients.s3, settings.s3_bucket, document.storage_key)
+    with span("ingest.parse", file_type=file_type.value) as parse:
+        pages = await asyncio.to_thread(_read_pages, data, file_type)
+        parse.set_attribute("pages", len(pages))
+    with span("ingest.chunk") as chunking:
+        chunks = await asyncio.to_thread(
+            chunk_document,
+            pages,
+            context.embedder.count_tokens,
+            settings.chunk_size_tokens,
+            settings.chunk_overlap_tokens,
+        )
+        chunking.set_attribute("chunks", len(chunks))
     if not chunks:
         raise BadDocumentError(NO_TEXT_ERROR)
-    vectors = await _embed(context, job.document_id, chunks)
+    with span("ingest.embed", chunks=len(chunks)):
+        vectors = await _embed(context, job.document_id, chunks)
 
-    await save_document_vectors(
-        clients.qdrant, settings.qdrant_collection, job.tenant_id, job.document_id, vectors
-    )
+    with span("ingest.store_vectors"):
+        await save_document_vectors(
+            clients.qdrant, settings.qdrant_collection, job.tenant_id, job.document_id, vectors
+        )
     page_count = len(pages) if file_type is FileType.PDF else None
-    docs_version = await _save_chunks(context, job, chunks, page_count)
+    with span("ingest.save_chunks"):
+        docs_version = await _save_chunks(context, job, chunks, page_count)
     if docs_version is None:
         # The document was deleted while we worked: remove the vectors we just wrote.
         await delete_document_vectors(
@@ -91,6 +102,7 @@ async def ingest_document(context: JobContext, job: Job) -> None:
     await forget_old_answers(
         clients.qdrant, settings.answer_cache_collection, job.tenant_id, docs_version
     )
+    metrics.INGESTED_CHUNKS.inc(len(chunks))
     logger.info("Document is ready", extra={"chunk_count": len(chunks), "page_count": page_count})
 
 
@@ -101,17 +113,20 @@ async def delete_document(context: JobContext, job: Job) -> None:
     if document is None or document.status is not DocumentStatus.DELETING:
         logger.info("Nothing to delete: the document is already gone")
         return
-    await delete_document_vectors(
-        clients.qdrant, settings.qdrant_collection, job.tenant_id, job.document_id
-    )
-    await delete_file(clients.s3, settings.s3_bucket, document.storage_key)
-    async with clients.sessions() as session, session.begin():
-        # Its chunks are deleted with it (ON DELETE CASCADE).
-        await session.execute(
-            delete(Document).where(
-                Document.id == job.document_id, Document.tenant_id == job.tenant_id
-            )
+    with span("delete.vectors"):
+        await delete_document_vectors(
+            clients.qdrant, settings.qdrant_collection, job.tenant_id, job.document_id
         )
+    with span("delete.file"):
+        await delete_file(clients.s3, settings.s3_bucket, document.storage_key)
+    with span("delete.rows"):
+        async with clients.sessions() as session, session.begin():
+            # Its chunks are deleted with it (ON DELETE CASCADE).
+            await session.execute(
+                delete(Document).where(
+                    Document.id == job.document_id, Document.tenant_id == job.tenant_id
+                )
+            )
     logger.info("Document deleted")
 
 

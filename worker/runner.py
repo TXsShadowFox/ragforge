@@ -7,6 +7,7 @@ import signal
 
 import aio_pika
 
+from shared import metrics
 from shared.answer_cache import forget_expired_answers
 from shared.clients import Clients
 from shared.config import Settings
@@ -32,6 +33,7 @@ async def run_worker(
 ) -> None:
     """Run until `stop` is set (or, with `handle_signals`, until SIGTERM / Ctrl+C)."""
     stop = stop or asyncio.Event()
+    metrics.start_worker_metrics()
     if handle_signals:
         _stop_on_signals(stop)
     if embedder is None:

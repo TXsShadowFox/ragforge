@@ -3,6 +3,7 @@
 `prepare()` does everything before the LLM writes, so its errors (an unknown session, the
 LLM being down) become normal HTTP errors. Then `answer()` or `answer_stream()` finish.
 Each step uses its own short database session: no connection waits while the LLM writes.
+Each step is also a span of the request's trace, and feeds the Prometheus metrics.
 """
 
 import asyncio
@@ -14,6 +15,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Self
 
+from opentelemetry.trace import Status, StatusCode
 from sqlalchemy import Uuid, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,15 +25,24 @@ from api.chat.prompts import (
     answer_messages,
     cited_numbers,
     is_no_answer,
+    normalize_citations,
     rewrite_messages,
 )
 from api.chat.retrieval import Source, find_sources
 from api.chat.usage import add_daily_usage, answer_cost
-from shared.answer_cache import AnswerCache, CachedAnswer, CacheKey, normalize_question
+from shared import metrics
+from shared.answer_cache import (
+    AnswerCache,
+    CachedAnswer,
+    CacheKey,
+    answer_setup,
+    normalize_question,
+)
 from shared.clients import Clients
 from shared.config import Settings
 from shared.db.models import ChatSession, Message, MessageRole, Tenant
-from shared.llm import ChatMessage, Usage
+from shared.llm import ChatMessage, LLMBusyError, LLMError, Usage
+from shared.tracing import span, tracer
 
 logger = logging.getLogger(__name__)
 
@@ -145,31 +156,38 @@ class ChatService:
     ) -> PreparedTurn:
         started_at = time.perf_counter()
         history: list[ChatMessage] = []
-        async with self._clients.sessions() as session:
-            new_session_id, question_id, answer_id = await _new_ids(session)
-            docs_version = await session.scalar(
-                select(Tenant.docs_version).where(Tenant.id == tenant_id)
-            )
-            if session_id is not None:
-                history = await self._history(session, tenant_id, session_id)
+        with span("chat.load_context"):
+            async with self._clients.sessions() as session:
+                new_session_id, question_id, answer_id = await _new_ids(session)
+                docs_version = await session.scalar(
+                    select(Tenant.docs_version).where(Tenant.id == tenant_id)
+                )
+                if session_id is not None:
+                    history = await self._history(session, tenant_id, session_id)
 
         usage = Usage()
         search_question = question
         if history:  # a follow-up: make it a full question first ("and the fee?")
-            rewritten = await self._ai.llm.complete(
-                rewrite_messages(question, history), usage, max_tokens=REWRITE_MAX_TOKENS
+            rewritten = await self._complete(
+                "rewrite",
+                rewrite_messages(question, history),
+                usage,
+                max_tokens=REWRITE_MAX_TOKENS,
             )
             search_question = rewritten.strip() or question
 
         # One vector for both the semantic cache and the search.
-        vector = await asyncio.to_thread(self._ai.embedder.embed_query, search_question)
+        with span("retrieval.embed"), metrics.timer(metrics.RETRIEVAL_DURATION, step="embed"):
+            vector = await asyncio.to_thread(self._ai.embedder.embed_query, search_question)
         cache_key = CacheKey(
             tenant_id=tenant_id,
             docs_version=docs_version or 0,
             question=normalize_question(search_question),
-            setup=f"top{top_k}:{self._ai.llm.model}",
+            setup=answer_setup(self._settings, top_k, self._ai.llm.model),
         )
-        cached = await self._cache.get(cache_key, vector)
+        with span("cache.lookup") as lookup:
+            cached = await self._cache.get(cache_key, vector)
+            lookup.set_attribute("cache.result", cached.kind if cached else "miss")
         sources = (
             []
             if cached
@@ -204,7 +222,7 @@ class ChatService:
             return await self._save(turn, turn.cached.answer)
         if turn.prompt is None:
             return await self._save(turn, NO_ANSWER)
-        return await self._save(turn, await self._ai.llm.complete(turn.prompt, turn.usage))
+        return await self._save(turn, await self._complete("answer", turn.prompt, turn.usage))
 
     async def answer_stream(self, turn: PreparedTurn) -> AsyncIterator[tuple[str, dict[str, Any]]]:
         """Events: "start" (IDs), "token" (pieces of the answer), "done" (the full result)."""
@@ -214,12 +232,39 @@ class ChatService:
             yield "token", {"text": text}
         else:
             pieces: list[str] = []
-            async for piece in self._ai.llm.stream(turn.prompt, turn.usage):
-                pieces.append(piece)
-                yield "token", {"text": piece}
+            call = _LLMCall("answer", turn.usage)
+            try:
+                async for piece in self._ai.llm.stream(turn.prompt, turn.usage):
+                    if not pieces:
+                        call.first_piece()
+                    pieces.append(piece)
+                    yield "token", {"text": piece}
+            except LLMError as exc:
+                call.failed(exc)
+                raise
+            finally:
+                call.end()  # also when the browser leaves in the middle of the answer
             text = "".join(pieces)
         result = await self._save(turn, text)
         yield "done", result.to_json()
+
+    async def _complete(
+        self,
+        operation: str,
+        messages: list[ChatMessage],
+        usage: Usage,
+        *,
+        max_tokens: int | None = None,
+    ) -> str:
+        """A whole LLM answer at once, measured (metrics and a span)."""
+        call = _LLMCall(operation, usage)
+        try:
+            return await self._ai.llm.complete(messages, usage, max_tokens=max_tokens)
+        except LLMError as exc:
+            call.failed(exc)
+            raise
+        finally:
+            call.end()
 
     async def _history(
         self, session: AsyncSession, tenant_id: uuid.UUID, session_id: uuid.UUID
@@ -246,11 +291,17 @@ class ChatService:
         ]
 
     async def _save(self, turn: PreparedTurn, text: str) -> TurnResult:
-        text = text.strip() or NO_ANSWER
+        with span("chat.save"):
+            return await self._save_turn(turn, text)
+
+    async def _save_turn(self, turn: PreparedTurn, text: str) -> TurnResult:
+        text = normalize_citations(text.strip()) or NO_ANSWER
         cache_hit = turn.cached is not None
         citations = _citations(turn, text)
         cost = answer_cost(turn.usage, self._settings)
         latency_ms = round((time.perf_counter() - turn.started_at) * 1000)
+        metrics.CHAT_ANSWERS.labels(source=_answer_source(turn)).inc()
+        metrics.LLM_COST.inc(float(cost))
         async with self._clients.sessions() as session, session.begin():
             if turn.is_new_session:
                 session.add(ChatSession(id=turn.session_id, tenant_id=turn.tenant_id))
@@ -308,6 +359,52 @@ class ChatService:
             cache_hit=cache_hit,
             latency_ms=latency_ms,
         )
+
+
+class _LLMCall:
+    """One LLM call, measured: its time, tokens and errors (metrics), and a span.
+
+    The span is never the "current" one: a streamed answer spans many `yield`s, and an
+    attached span could not be detached cleanly if the browser leaves in the middle.
+    """
+
+    def __init__(self, operation: str, usage: Usage) -> None:
+        self._operation = operation
+        self._usage = usage
+        self._tokens_before = (usage.prompt_tokens, usage.completion_tokens)
+        self._started = time.perf_counter()
+        self._failed = False
+        self._span = tracer.start_span(f"llm.{operation}")
+
+    def first_piece(self) -> None:
+        metrics.LLM_FIRST_TOKEN.observe(time.perf_counter() - self._started)
+        self._span.add_event("first piece of the answer")
+
+    def failed(self, error: LLMError) -> None:
+        self._failed = True
+        kind = "busy" if isinstance(error, LLMBusyError) else "error"
+        metrics.LLM_ERRORS.labels(kind=kind).inc()
+        self._span.record_exception(error)
+        self._span.set_status(Status(StatusCode.ERROR, kind))
+
+    def end(self) -> None:
+        if not self._failed:
+            seconds = time.perf_counter() - self._started
+            metrics.LLM_DURATION.labels(operation=self._operation).observe(seconds)
+        tokens_in = self._usage.prompt_tokens - self._tokens_before[0]
+        tokens_out = self._usage.completion_tokens - self._tokens_before[1]
+        metrics.LLM_TOKENS.labels(operation=self._operation, direction="input").inc(tokens_in)
+        metrics.LLM_TOKENS.labels(operation=self._operation, direction="output").inc(tokens_out)
+        self._span.set_attribute("llm.tokens.input", tokens_in)
+        self._span.set_attribute("llm.tokens.output", tokens_out)
+        self._span.end()
+
+
+def _answer_source(turn: PreparedTurn) -> str:
+    """Where the answer came from: exact_cache, semantic_cache, llm, or no_sources."""
+    if turn.cached is not None:
+        return f"{turn.cached.kind}_cache"
+    return "llm" if turn.prompt is not None else "no_sources"
 
 
 def _citations(turn: PreparedTurn, text: str) -> list[Citation]:

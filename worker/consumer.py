@@ -8,11 +8,15 @@
 
 import asyncio
 import logging
+import time
 from collections.abc import Sequence
 
 import aio_pika
 from aio_pika.abc import AbstractExchange, AbstractIncomingMessage
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 
+from shared import metrics
 from shared.jobs import (
     ATTEMPT_HEADER,
     DEAD_QUEUE,
@@ -21,7 +25,8 @@ from shared.jobs import (
     next_retry_delay,
     retry_queue,
 )
-from shared.logging import log_context
+from shared.logging import bind_log_context, log_context
+from shared.tracing import job_span, trace_id_fields
 from worker.parsing import BadDocumentError
 from worker.pipeline import JobContext, mark_failed, run_job
 
@@ -75,25 +80,41 @@ class JobConsumer:
 
         attempt_header = message.headers.get(ATTEMPT_HEADER, 0)
         failures = attempt_header if isinstance(attempt_header, int) else 0
-        with log_context(
-            job_type=job.type.value,
-            tenant_id=str(job.tenant_id),
-            document_id=str(job.document_id),
-            attempt=str(failures + 1),
+        with (
+            log_context(
+                job_type=job.type.value,
+                tenant_id=str(job.tenant_id),
+                document_id=str(job.document_id),
+                attempt=str(failures + 1),
+            ),
+            # In the trace of the request that created the job (the upload or the delete).
+            job_span(
+                f"job.{job.type.value}",
+                job.traceparent,
+                document_id=str(job.document_id),
+                attempt=failures + 1,
+            ),
         ):
+            bind_log_context(**trace_id_fields())  # logs lead to the job's trace
             await self._run(job, message, failures)
         await message.ack()
 
     async def _run(self, job: Job, message: AbstractIncomingMessage, failures: int) -> None:
+        started = time.perf_counter()
+        outcome = "done"
         try:
             await run_job(self._context, job)
         except BadDocumentError as exc:
+            outcome = "bad_file"
+            _mark_span_failed(exc)
             logger.warning("The file cannot be processed: %s", exc)
             await mark_failed(self._context, job, str(exc))
         except Exception as exc:
+            _mark_span_failed(exc)
             failures += 1
             error = f"{type(exc).__name__}: {exc}"
             delay = next_retry_delay(failures, self._retry_delays)
+            outcome = "dead" if delay is None else "retried"
             if delay is None:
                 logger.exception("The job failed %d times; giving up", failures)
                 await mark_failed(
@@ -105,9 +126,20 @@ class JobConsumer:
             else:
                 logger.warning("The job failed; trying again in %d s", delay, exc_info=True)
                 await self._publish(job, message, retry_queue(delay), failures, error)
+        finally:
+            metrics.JOBS.labels(type=job.type.value, outcome=outcome).inc()
+            seconds = time.perf_counter() - started
+            metrics.JOB_DURATION.labels(type=job.type.value).observe(seconds)
 
     async def _publish(
         self, job: Job, message: AbstractIncomingMessage, queue: str, failures: int, error: str
     ) -> None:
         retry = job.to_message(message_id=message.message_id or "", failures=failures, error=error)
         await self._exchange.publish(retry, routing_key=queue, mandatory=True)
+
+
+def _mark_span_failed(error: Exception) -> None:
+    """Show the failure in the job's trace (we handle the error, so the span does not see it)."""
+    current = trace.get_current_span()
+    current.record_exception(error)
+    current.set_status(Status(StatusCode.ERROR, type(error).__name__))

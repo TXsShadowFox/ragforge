@@ -1,0 +1,37 @@
+# Jaeger v2 (an OpenTelemetry Collector inside): receives the API's and the worker's traces
+# over OTLP/HTTP (port 4318), keeps them in memory, and shows them at
+# http://localhost:16686 (Grafana reads them too). Traces are gone after a restart: fine
+# for development.
+service:
+  extensions: [jaeger_storage, jaeger_query]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [jaeger_storage_exporter]
+
+extensions:
+  jaeger_storage:
+    backends:
+      memstore:
+        memory:
+          # The newest traces only, so the memory stays small (the default is 100,000).
+          max_traces: 5000
+  jaeger_query:
+    # Do not trace Jaeger's own queries (they would go to a gRPC port we do not open).
+    enable_tracing: false
+    storage:
+      traces: memstore
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+
+exporters:
+  jaeger_storage_exporter:
+    trace_storage: memstore

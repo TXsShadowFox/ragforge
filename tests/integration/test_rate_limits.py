@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 from httpx import AsyncClient
+from prometheus_client import REGISTRY
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -64,6 +65,7 @@ async def test_too_many_questions_get_429_with_retry_after(limited_api: AsyncCli
 
 async def test_too_many_requests_get_429(limited_api: AsyncClient) -> None:
     owner = await sign_up(limited_api, "owner@example.com")
+    refused = REGISTRY.get_sample_value("ragforge_rate_limited_total", {"limit": "requests"}) or 0
 
     responses = [await limited_api.get("/v1/documents", headers=owner.headers) for _ in range(6)]
 
@@ -71,6 +73,10 @@ async def test_too_many_requests_get_429(limited_api: AsyncClient) -> None:
     remaining = [response.headers["X-RateLimit-Remaining"] for response in responses[:5]]
     assert remaining == ["4", "3", "2", "1", "0"]
     assert 1 <= int(responses[-1].headers["Retry-After"]) <= 12  # 5 a minute: one every 12 s
+    # Grafana's "refused by the rate limits" panel counts it.
+    assert REGISTRY.get_sample_value("ragforge_rate_limited_total", {"limit": "requests"}) == (
+        refused + 1
+    )
 
 
 async def test_each_user_and_api_key_has_its_own_limit(limited_api: AsyncClient) -> None:

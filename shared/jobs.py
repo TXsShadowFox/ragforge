@@ -38,17 +38,25 @@ class Job:
     type: JobType
     tenant_id: uuid.UUID
     document_id: uuid.UUID
+    # The trace of the request that created the job (W3C traceparent), so the worker's
+    # spans join that trace. None: no tracing.
+    traceparent: str | None = None
 
     def payload(self) -> dict[str, str]:
         """What we store in the outbox (the type has its own column)."""
-        return {"tenant_id": str(self.tenant_id), "document_id": str(self.document_id)}
+        payload = {"tenant_id": str(self.tenant_id), "document_id": str(self.document_id)}
+        if self.traceparent:
+            payload["traceparent"] = self.traceparent
+        return payload
 
     @classmethod
     def from_outbox(cls, job_type: JobType, payload: Mapping[str, Any]) -> Self:
+        traceparent = payload.get("traceparent")
         return cls(
             type=job_type,
             tenant_id=uuid.UUID(payload["tenant_id"]),
             document_id=uuid.UUID(payload["document_id"]),
+            traceparent=traceparent if isinstance(traceparent, str) else None,
         )
 
     def to_message(

@@ -1,0 +1,13 @@
+# Grafana loads every dashboard JSON in /etc/grafana/dashboards at startup (mounted from
+# infra/grafana/dashboards). Edit the JSON in the repo, not in Grafana: the UI cannot save it.
+apiVersion: 1
+
+providers:
+  - name: RAGForge
+    folder: RAGForge
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/dashboards

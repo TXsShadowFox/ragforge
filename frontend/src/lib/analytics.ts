@@ -1,6 +1,6 @@
 /** Date ranges and chart rows for the analytics page. Days are UTC, like in the API. */
 
-import type { DayUsage } from "@/lib/types";
+import type { DayUsage, QualityReport } from "@/lib/types";
 
 export type ChartRow = {
   label: string; // "Oct 8"
@@ -29,6 +29,12 @@ export function chartRows(days: DayUsage[]): ChartRow[] {
     p95: day.latency_p95_ms,
     cost: day.cost_usd,
   }));
+}
+
+export type RatingRow = { label: string; up: number; down: number };
+
+export function ratingRows(days: QualityReport["days"]): RatingRow[] {
+  return days.map((day) => ({ label: dayLabel(day.day), up: day.up, down: day.down }));
 }
 
 function isoDay(utcMillis: number): string {

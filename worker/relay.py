@@ -9,15 +9,18 @@ import asyncio
 import logging
 
 from aio_pika.abc import AbstractExchange
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from shared import metrics
 from shared.db.models import OutboxMessage
 from shared.jobs import JOBS_QUEUE, Job
 
 logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 100
+# How often the "jobs waiting in the outbox" metric is counted again.
+PENDING_COUNT_SECONDS = 15.0
 
 
 async def relay_once(sessions: async_sessionmaker[AsyncSession], exchange: AbstractExchange) -> int:
@@ -50,11 +53,27 @@ async def relay_forever(
     sessions: async_sessionmaker[AsyncSession], exchange: AbstractExchange, poll_seconds: float
 ) -> None:
     """Keep sending jobs until cancelled. A full batch means more may be waiting: no pause."""
+    loop = asyncio.get_running_loop()
+    next_count = loop.time()
     while True:
         try:
             sent = await relay_once(sessions, exchange)
         except Exception:
             logger.exception("Could not send outbox jobs; trying again soon")
             sent = 0
+        if loop.time() >= next_count:
+            next_count = loop.time() + PENDING_COUNT_SECONDS
+            await _count_pending(sessions)
         if sent < BATCH_SIZE:
             await asyncio.sleep(poll_seconds)
+
+
+async def _count_pending(sessions: async_sessionmaker[AsyncSession]) -> None:
+    """Update the metric of jobs that wait in the outbox (it grows while RabbitMQ is down)."""
+    try:
+        async with sessions() as session:
+            pending = await session.scalar(select(func.count()).select_from(OutboxMessage))
+    except Exception:
+        logger.warning("Could not count the outbox jobs", exc_info=True)
+        return
+    metrics.OUTBOX_PENDING.set(pending or 0)

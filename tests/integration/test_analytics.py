@@ -1,5 +1,5 @@
-"""Usage analytics: numbers from real chat turns, then exact sums and percentiles from
-rows written by the test."""
+"""Analytics: usage numbers from real chat turns, then exact sums and percentiles from
+rows written by the test; and the answer quality from the users' ratings."""
 
 import uuid
 from datetime import UTC, date, datetime, timedelta
@@ -12,7 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from api.chat.usage import answer_cost
 from shared.config import Settings
-from shared.db.models import ChatSession, Message, MessageRole, UsageDaily
+from shared.db.models import (
+    ChatSession,
+    Feedback,
+    FeedbackRating,
+    Message,
+    MessageRole,
+    UsageDaily,
+)
 from shared.llm import Usage
 from tests.integration.helpers import Account, ask, chat_client, sign_up, upload_handbook
 
@@ -139,6 +146,7 @@ async def test_the_longest_range_is_366_days(api: AsyncClient) -> None:
     assert len(report["days"]) == 366
 
 
+@pytest.mark.parametrize("report", ["usage", "quality"])
 @pytest.mark.parametrize(
     "params",
     [
@@ -146,10 +154,114 @@ async def test_the_longest_range_is_366_days(api: AsyncClient) -> None:
         {"from": "2025-01-01", "to": "2026-01-02"},  # 367 days
     ],
 )
-async def test_a_bad_date_range_gets_400(api: AsyncClient, params: dict[str, str]) -> None:
+async def test_a_bad_date_range_gets_400(
+    api: AsyncClient, report: str, params: dict[str, str]
+) -> None:
     owner = await sign_up(api, "owner@example.com")
 
-    response = await api.get("/v1/analytics/usage", params=params, headers=owner.headers)
+    response = await api.get(f"/v1/analytics/{report}", params=params, headers=owner.headers)
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "bad_date_range"
+
+
+# -------------------------------------------------------------------- quality ----
+
+
+async def _turns(
+    engine: AsyncEngine, account: Account, ratings: list[tuple[FeedbackRating | None, datetime]]
+) -> list[uuid.UUID]:
+    """One conversation: a question and an answer per item, rated as given. Returns the
+    answers' IDs. IDs grow in order, like uuidv7, so each question comes before its answer."""
+    answers = []
+    async with AsyncSession(engine) as session, session.begin():
+        chat = ChatSession(tenant_id=account.tenant_id)
+        session.add(chat)
+        await session.flush()
+        base = uuid.uuid4().int & ~((1 << 64) - 1)  # random high bits, room for counting
+        for number, (rating, at) in enumerate(ratings):
+            question_id, answer_id = (
+                uuid.UUID(int=base + 2 * number),
+                uuid.UUID(int=base + 2 * number + 1),
+            )
+            session.add_all(
+                [
+                    Message(
+                        id=question_id,
+                        tenant_id=account.tenant_id,
+                        session_id=chat.id,
+                        role=MessageRole.USER,
+                        content=f"Question {number}?",
+                        created_at=at,
+                    ),
+                    Message(
+                        id=answer_id,
+                        tenant_id=account.tenant_id,
+                        session_id=chat.id,
+                        role=MessageRole.ASSISTANT,
+                        content=f"Answer {number}.",
+                        latency_ms=100,
+                        created_at=at,
+                    ),
+                ]
+            )
+            await session.flush()
+            if rating is not None:
+                session.add(
+                    Feedback(
+                        tenant_id=account.tenant_id,
+                        message_id=answer_id,
+                        rating=rating,
+                        comment="Wrong page" if rating is FeedbackRating.DOWN else None,
+                        created_at=at,
+                        updated_at=at,
+                    )
+                )
+            answers.append(answer_id)
+    return answers
+
+
+async def test_quality_shows_the_ratings_of_your_answers(
+    api: AsyncClient, db_engine: AsyncEngine
+) -> None:
+    owner = await sign_up(api, "owner@example.com")
+    other = await sign_up(api, "other@example.com", tenant_name="Other")
+    now = datetime.now(UTC)
+    up, down = FeedbackRating.UP, FeedbackRating.DOWN
+    answers = await _turns(
+        db_engine,
+        owner,
+        [(up, now), (up, now), (None, now), (down, now - timedelta(minutes=5)), (down, now)],
+    )
+    await _turns(db_engine, owner, [(down, now - timedelta(days=40))])  # before the range
+    await _turns(db_engine, other, [(down, now), (down, now)])  # another tenant
+
+    response = await api.get("/v1/analytics/quality", headers=owner.headers)
+
+    assert response.status_code == 200, response.text
+    report = response.json()
+    assert report["totals"] == {
+        "answers": 5,
+        "rated": 4,
+        "up": 2,
+        "down": 2,
+        "satisfaction_rate": 0.5,
+    }
+    assert len(report["days"]) == 30
+    assert report["days"][-1]["day"] == now.date().isoformat()
+    assert (report["days"][-1]["up"], report["days"][-1]["down"]) == (2, 2)
+    newest, older = report["recent_negative"]  # newest first, only the owner's
+    assert newest["message_id"] == str(answers[4])
+    assert (newest["question"], newest["answer"]) == ("Question 4?", "Answer 4.")
+    assert newest["comment"] == "Wrong page"
+    assert older["message_id"] == str(answers[3])
+
+
+async def test_quality_without_ratings_has_no_rate(api: AsyncClient) -> None:
+    owner = await sign_up(api, "owner@example.com")
+
+    response = await api.get("/v1/analytics/quality", headers=owner.headers)
+
+    totals = response.json()["totals"]
+    assert totals == {"answers": 0, "rated": 0, "up": 0, "down": 0, "satisfaction_rate": None}
+    assert response.json()["recent_negative"] == []

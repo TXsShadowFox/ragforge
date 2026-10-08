@@ -25,6 +25,8 @@ Reply with the rewritten question only."""
 # Old answers can be long; the rewrite only needs their start.
 _HISTORY_CHARS = 400
 _CITATION = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")  # [1] or [1, 2]
+# gpt-oss sometimes cites in its own style: 【1】, or 【1†L3-L5】 with line numbers.
+_WIDE_CITATION = re.compile(r"【(\d+)(?:†[^】]*)?】")
 
 
 def answer_messages(question: str, sources: Sequence[Source]) -> list[ChatMessage]:
@@ -54,6 +56,11 @@ def source_location(source: Source) -> str:
     if source.page_number is None:
         return source.filename
     return f"{source.filename}, page {source.page_number}"
+
+
+def normalize_citations(answer: str) -> str:
+    """Write every citation as [n], also those in gpt-oss's own style (【1】, 【1†L3-L5】)."""
+    return _WIDE_CITATION.sub(r"[\1]", answer)
 
 
 def cited_numbers(answer: str, source_count: int) -> list[int]:

@@ -12,17 +12,20 @@ import dataclasses
 import logging
 import uuid
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Awaitable, Collection, Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 from sqlalchemy import Text, cast, func, select
 from sqlalchemy.dialects.postgresql import TSQUERY
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.ai import AIServices
+from shared import metrics
 from shared.clients import Clients
 from shared.config import Settings
 from shared.db.models import Chunk, Document, DocumentStatus
+from shared.tracing import span
 from shared.vector_store import search_chunks
 
 logger = logging.getLogger(__name__)
@@ -55,6 +58,9 @@ def reciprocal_rank_fusion(rankings: Sequence[Sequence[uuid.UUID]]) -> list[uuid
     return sorted(scores, key=lambda item: scores[item], reverse=True)
 
 
+SearchMethod = Literal["vector", "keyword"]
+
+
 async def find_sources(
     query: str,
     vector: list[float],
@@ -69,31 +75,78 @@ async def find_sources(
 
     Empty: nothing relevant.
     """
-    limit = settings.search_candidates
-    async with clients.sessions() as session:
-        by_meaning, by_words = await asyncio.gather(
-            search_chunks(clients.qdrant, settings.qdrant_collection, tenant_id, vector, limit),
-            keyword_search(session, tenant_id, query, limit),
+    with span("retrieval") as current:
+        candidates = await search_candidates(
+            query, vector, tenant_id, settings=settings, clients=clients
         )
-        candidates = reciprocal_rank_fusion([by_meaning, by_words])[:limit]
-        sources = await load_ready_chunks(session, tenant_id, candidates)
-    if not sources:
-        logger.info("Search found no chunks")
-        return []
-    # The database connection is back in the pool before the slow reranking starts.
-    scores = await asyncio.to_thread(ai.reranker.rerank, query, [s.text for s in sources])
-    ranked = sorted(zip(sources, scores, strict=True), key=lambda pair: pair[1], reverse=True)
-    relevant = [
-        dataclasses.replace(source, score=score)
-        for source, score in ranked[:keep]
-        if score >= settings.min_rerank_score
-    ]
+        if not candidates:
+            logger.info("Search found no chunks")
+            return []
+        # The database connection is back in the pool before the slow reranking starts.
+        ranked = await rerank(query, candidates, ai)
+        relevant = [source for source in ranked[:keep] if source.score >= settings.min_rerank_score]
+        current.set_attribute("retrieval.candidates", len(candidates))
+        current.set_attribute("retrieval.relevant", len(relevant))
     logger.info(
         "Search found %d relevant chunks",
         len(relevant),
-        extra={"candidates": len(sources), "best_score": round(ranked[0][1], 2)},
+        extra={"candidates": len(candidates), "best_score": round(ranked[0].score, 2)},
     )
     return relevant
+
+
+async def search_candidates(
+    query: str,
+    vector: list[float],
+    tenant_id: uuid.UUID,
+    *,
+    settings: Settings,
+    clients: Clients,
+    methods: Collection[SearchMethod] = ("vector", "keyword"),
+) -> list[Source]:
+    """Steps 1 and 2: the searches, merged with RRF. Chunks of ready documents, best first.
+
+    `methods` lets the evaluation (eval/) compare one search with both.
+    """
+    limit = settings.search_candidates
+    async with clients.sessions() as session:
+        searches: list[Awaitable[list[uuid.UUID]]] = []
+        if "vector" in methods:
+            searches.append(
+                _measured(
+                    "vector_search",
+                    search_chunks(
+                        clients.qdrant, settings.qdrant_collection, tenant_id, vector, limit
+                    ),
+                )
+            )
+        if "keyword" in methods:
+            searches.append(
+                _measured("keyword_search", keyword_search(session, tenant_id, query, limit))
+            )
+        rankings = await asyncio.gather(*searches)
+        candidates = reciprocal_rank_fusion(rankings)[:limit]
+        return await _measured("load_chunks", load_ready_chunks(session, tenant_id, candidates))
+
+
+async def rerank(query: str, sources: Sequence[Source], ai: AIServices) -> list[Source]:
+    """Step 3: the chunks sorted by the reranker's score (best first), with the score."""
+    with (
+        span("retrieval.rerank", chunks=len(sources)),
+        metrics.timer(metrics.RETRIEVAL_DURATION, step="rerank"),
+    ):
+        scores = await asyncio.to_thread(ai.reranker.rerank, query, [s.text for s in sources])
+    ranked = sorted(zip(sources, scores, strict=True), key=lambda pair: pair[1], reverse=True)
+    return [dataclasses.replace(source, score=score) for source, score in ranked]
+
+
+async def _measured[T](step: str, work: Awaitable[T]) -> T:
+    """One search step as a span, timed in the metrics."""
+    with (
+        span(f"retrieval.{step}"),
+        metrics.timer(metrics.RETRIEVAL_DURATION, step=step),
+    ):
+        return await work
 
 
 async def keyword_search(

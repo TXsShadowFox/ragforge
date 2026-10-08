@@ -5,6 +5,7 @@ uvicorn runs `create_app_from_env` (`make dev` and the Docker image do this for 
 Tests call `create_app` with their own settings (and fake AI models).
 """
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -12,10 +13,11 @@ from importlib.metadata import version
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.telemetry import TelemetryConfig
 
 from api.ai import AIServices, load_ai_services
 from api.errors import install_error_handlers
-from api.middleware import REQUEST_ID_HEADER, RequestContextMiddleware
+from api.middleware import QUIET_PATHS, REQUEST_ID_HEADER, RequestContextMiddleware
 from api.ratelimit import RateLimiter
 from api.readiness import build_checks
 from api.routes import (
@@ -29,18 +31,34 @@ from api.routes import (
     system,
     widget,
 )
+from shared import metrics
 from shared.answer_cache import AnswerCache
 from shared.clients import Clients
 from shared.config import Settings, get_settings
 from shared.logging import configure_logging
+from shared.tracing import setup_tracing
 
 logger = logging.getLogger(__name__)
+
+# FastAPI's own OpenTelemetry spans: one per request (named like "POST /v1/chat"), with
+# child spans for the dependencies, the endpoint and the response. They are exported only
+# when shared/tracing.py installs a tracer (OTLP_TRACES_ENDPOINT). Metrics and logs have
+# their own tools here (Prometheus, JSON logs), and exporters come only from our settings.
+TELEMETRY: TelemetryConfig = {
+    "tracing": True,
+    "operation_spans": True,
+    "metrics": False,
+    "logs": False,
+    "auto_configure": False,
+    "exclude": lambda scope: scope.get("path") in QUIET_PATHS,
+}
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Create the service clients and load the AI models at startup; close them at shutdown."""
     settings: Settings = app.state.settings
+    tracing = setup_tracing(settings, "ragforge-api")  # None: no OTLP endpoint, no tracing
     ai: AIServices | None = app.state.ai_override
     if ai is None:
         logger.info("Loading the embedding and reranking models")
@@ -56,12 +74,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         await ai.llm.aclose()
         await clients.aclose()
+        if tracing is not None:
+            await asyncio.to_thread(tracing.shutdown)  # sends the last spans
 
 
 def create_app(settings: Settings, *, ai: AIServices | None = None) -> FastAPI:
     """Build the app. `ai`: use these models instead of loading the real ones (tests)."""
-    app = FastAPI(title="RAGForge API", version=version("ragforge"), lifespan=lifespan)
+    app = FastAPI(
+        title="RAGForge API", version=version("ragforge"), lifespan=lifespan, telemetry=TELEMETRY
+    )
     app.state.settings = settings
+    metrics.start_api_metrics()
     app.state.ai_override = ai
     install_error_handlers(app)
     app.add_middleware(RequestContextMiddleware)

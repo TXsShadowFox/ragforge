@@ -80,6 +80,26 @@ export type UsageReport = {
   };
 };
 
+export type QualityReport = {
+  start: string;
+  end: string;
+  days: { day: string; up: number; down: number }[];
+  totals: {
+    answers: number;
+    rated: number;
+    up: number;
+    down: number;
+    satisfaction_rate: number | null;
+  };
+  recent_negative: {
+    message_id: string;
+    question: string | null;
+    answer: string;
+    comment: string | null;
+    rated_at: string;
+  }[];
+};
+
 export type Me = {
   tenant_id: string;
   tenant_name: string;

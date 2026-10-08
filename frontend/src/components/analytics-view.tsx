@@ -15,10 +15,10 @@ import {
 } from "recharts";
 
 import { Card, ErrorNote, PageTitle } from "@/components/ui";
-import { chartRows, lastDays, type ChartRow } from "@/lib/analytics";
+import { chartRows, lastDays, ratingRows, type ChartRow } from "@/lib/analytics";
 import { api, errorMessage } from "@/lib/api-client";
-import { formatMs, formatPercent, formatUsd } from "@/lib/format";
-import type { UsageReport } from "@/lib/types";
+import { formatDateTime, formatMs, formatPercent, formatUsd } from "@/lib/format";
+import type { QualityReport, UsageReport } from "@/lib/types";
 
 const RANGES = [7, 30, 90] as const;
 const COLORS = {
@@ -27,6 +27,8 @@ const COLORS = {
   p50: "#0ea5e9",
   p95: "#f97316",
   cost: "#8b5cf6",
+  up: "#10b981",
+  down: "#ef4444",
 };
 // Days without questions have no value, so a line can be a single point: show points.
 const DOT = { r: 3 };
@@ -34,15 +36,21 @@ const DOT = { r: 3 };
 export function AnalyticsView() {
   const [range, setRange] = useState<(typeof RANGES)[number]>(30);
   const [report, setReport] = useState<UsageReport | null>(null);
+  const [quality, setQuality] = useState<QualityReport | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
     const { from, to } = lastDays(range, new Date());
-    api<UsageReport>(`/analytics/usage?from=${from}&to=${to}`).then(
-      (data) => {
+    const days = `from=${from}&to=${to}`;
+    Promise.all([
+      api<UsageReport>(`/analytics/usage?${days}`),
+      api<QualityReport>(`/analytics/quality?${days}`),
+    ]).then(
+      ([usage, ratings]) => {
         if (!active) return;
-        setReport(data);
+        setReport(usage);
+        setQuality(ratings);
         setError(null);
       },
       (err: unknown) => active && setError(errorMessage(err)),
@@ -116,10 +124,64 @@ export function AnalyticsView() {
               </BarChart>
             </Chart>
           </div>
+          {quality && <AnswerQuality quality={quality} />}
         </div>
       )}
       {!report && !error && <p className="text-sm text-gray-500">Loading...</p>}
     </>
+  );
+}
+
+/** What users think of the answers: their thumbs up and down (playground and widget). */
+function AnswerQuality({ quality }: { quality: QualityReport }) {
+  const { totals } = quality;
+  return (
+    <section className="space-y-4" aria-labelledby="answer-quality">
+      <div>
+        <h2 id="answer-quality" className="text-lg font-semibold text-gray-900">
+          Answer quality
+        </h2>
+        <p className="text-sm text-gray-600">
+          Thumbs up and down from the playground and the chat widget.
+        </p>
+      </div>
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+        <Stat
+          label="Good ratings"
+          value={totals.satisfaction_rate === null ? "–" : formatPercent(totals.satisfaction_rate)}
+        />
+        <Stat label="Thumbs up" value={totals.up.toLocaleString("en")} />
+        <Stat label="Thumbs down" value={totals.down.toLocaleString("en")} />
+        <Stat label="Answers rated" value={`${totals.rated} of ${totals.answers}`} />
+      </div>
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Chart title="Ratings per day">
+          <BarChart data={ratingRows(quality.days)}>
+            <Axes />
+            <Bar dataKey="up" name="Thumbs up" stackId="r" fill={COLORS.up} />
+            <Bar dataKey="down" name="Thumbs down" stackId="r" fill={COLORS.down} />
+          </BarChart>
+        </Chart>
+        <Card title="Latest thumbs down">
+          {quality.recent_negative.length === 0 ? (
+            <p className="text-sm text-gray-500">No thumbs down in these days.</p>
+          ) : (
+            <ul className="max-h-60 space-y-3 overflow-y-auto text-sm">
+              {quality.recent_negative.map((item) => (
+                <li key={item.message_id} className="border-b border-gray-100 pb-2">
+                  <p className="font-medium text-gray-900">{item.question ?? "(question?)"}</p>
+                  <p className="line-clamp-2 text-gray-600">{item.answer}</p>
+                  {item.comment && (
+                    <p className="text-gray-500 italic">&ldquo;{item.comment}&rdquo;</p>
+                  )}
+                  <p className="text-xs text-gray-400">{formatDateTime(item.rated_at)}</p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      </div>
+    </section>
   );
 }
 

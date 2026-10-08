@@ -1,5 +1,5 @@
 # Prometheus pulls ("scrapes") metrics from each target every 15 seconds.
-# Web UI: http://localhost:9090  (Status -> Targets shows if the API is UP)
+# Web UI: http://localhost:9090  (Status -> Targets shows if each target is UP)
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
@@ -13,3 +13,17 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: ["api:8000"]
+
+  # The worker serves its metrics on WORKER_METRICS_PORT (jobs, outbox backlog).
+  - job_name: ragforge-worker
+    static_configs:
+      - targets: ["worker:8001"]
+
+  # RabbitMQ's built-in Prometheus plugin. The "detailed" endpoint with this family gives
+  # the messages of each queue: the ingestion queue depth, retries and dead letters.
+  - job_name: rabbitmq
+    metrics_path: /metrics/detailed
+    params:
+      family: [queue_coarse_metrics]
+    static_configs:
+      - targets: ["rabbitmq:15692"]

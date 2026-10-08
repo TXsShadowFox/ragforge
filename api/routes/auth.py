@@ -15,6 +15,7 @@ from api.auth.tokens import create_access_token
 from api.dependencies import SessionDep, SettingsDep
 from api.errors import ApiError, unauthorized
 from api.ratelimit import RateLimiterDep, too_many_requests
+from shared import metrics
 from shared.db.models import Tenant, User, UserRole
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
@@ -77,6 +78,7 @@ async def login(
     # and too many tries cannot keep the CPU busy with argon2.
     decision = await limiter.hit(f"login:{email}", settings.login_attempts_per_minute)
     if decision is not None and not decision.allowed:
+        metrics.RATE_LIMITED.labels(limit="login").inc()
         raise too_many_requests(decision)
     user = await session.scalar(select(User).where(User.email == email))
     if user is None:

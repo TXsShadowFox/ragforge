@@ -1,0 +1,46 @@
+NORTHFIELD COLLEGE IT SERVICES - FREQUENTLY ASKED QUESTIONS
+
+How do I connect to the campus Wi-Fi?
+Connect to the network called NFC-Secure and log in with your college email address and
+password. The guest network NFC-Guest is for visitors only: it is slower and disconnects every
+4 hours. Each student can connect up to 3 devices at the same time.
+
+How do I reset my password?
+Go to password.northfield.edu and follow the steps. You will receive a code on the mobile
+number in your student record. Passwords must have at least 12 characters and must be changed
+every 180 days. After 5 wrong login attempts, your account is locked for 30 minutes.
+
+Where is the IT Help Desk?
+The IT Help Desk is in the Library Building, ground floor, room G-14. It is open from 8 am to
+8 pm on weekdays and from 10 am to 2 pm on Saturdays. You can also call extension 4357 or
+write to helpdesk@northfield.edu. Most requests are answered within one working day.
+
+Which software can I get for free?
+All students get Microsoft 365 with 1 TB of OneDrive storage while they are enrolled. MATLAB
+and SPSS are available on the computers in the labs and through the virtual desktop service.
+Students in the engineering programs can request a free AutoCAD student license from the IT
+Help Desk.
+
+How much email storage do I have?
+Student mailboxes have 50 GB of storage. Your college email account stays active for 6 months
+after you graduate; after that, it is deleted. Forward important messages to a personal
+address before then.
+
+Can I use the computer labs?
+The computer labs in the Engineering Block are open from 8 am to 9 pm on weekdays. Lab 2 is
+reserved for classes until 1 pm. Printing in the labs uses the same account as the library
+printers.
+
+What should I do about a phishing email?
+Do not click any link in it. Forward it to security@northfield.edu and delete it. IT Services
+will never ask for your password by email.
+
+How do I get help with my laptop?
+The IT Help Desk checks student laptops for free, including virus removal and operating
+system installation. Hardware repairs are not done on campus; the Help Desk can give you a
+list of authorized repair shops.
+
+How do I use the virtual desktop?
+Go to vdesk.northfield.edu and log in with your college account. The virtual desktop gives
+access to the lab software from your own computer, from 6 am to midnight. Each session ends
+after 3 hours of no activity.

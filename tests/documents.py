@@ -10,11 +10,12 @@ def make_pdf(pages: Sequence[str]) -> bytes:
     """A small valid PDF: one page per string, one text line per line of the string.
 
     Written by hand (it is a simple format), because pypdf cannot add text to new pages.
-    Uses Helvetica, a font every PDF reader has, so only latin-1 characters work.
+    Uses Helvetica, a font every PDF reader has, so only latin-1 characters work. The
+    font says WinAnsiEncoding: without it, "'" is read back as a curly quote (or garbage).
     """
     objects: dict[int, bytes] = {
         1: b"<< /Type /Catalog /Pages 2 0 R >>",
-        3: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        3: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
     }
     page_ids: list[int] = []
     for number, text in enumerate(pages):

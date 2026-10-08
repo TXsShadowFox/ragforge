@@ -7,7 +7,7 @@ from decimal import Decimal
 import pytest
 
 from api.chat.usage import answer_cost
-from shared.answer_cache import CacheKey, normalize_question
+from shared.answer_cache import CacheKey, answer_setup, normalize_question
 from shared.config import Settings
 from shared.llm import Usage
 
@@ -53,6 +53,21 @@ def test_the_same_question_always_gets_the_same_keys() -> None:
 def test_anything_that_changes_the_answer_changes_the_keys(other: CacheKey) -> None:
     assert other.redis_key != KEY.redis_key
     assert other.point_id != KEY.point_id
+
+
+@pytest.mark.parametrize(
+    "change", [{"min_rerank_score": -5.0}, {"rerank_model": "BAAI/bge-reranker-base"}]
+)
+def test_search_settings_that_change_answers_are_in_the_setup(
+    settings: Settings, change: dict[str, object]
+) -> None:
+    # Found in Phase 6: with a new MIN_RERANK_SCORE, old "I don't know" answers were reused.
+    setup = answer_setup(settings, 5, "model")
+
+    assert answer_setup(settings, 5, "model") == setup
+    assert answer_setup(settings.model_copy(update=change), 5, "model") != setup
+    assert answer_setup(settings, 3, "model") != setup
+    assert answer_setup(settings, 5, "another-model") != setup
 
 
 def test_the_redis_key_has_the_tenant_and_version_but_not_the_question_text() -> None:

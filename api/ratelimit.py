@@ -19,6 +19,7 @@ from redis.asyncio import Redis
 from api.auth.principal import Principal, get_principal, is_public_key
 from api.dependencies import SettingsDep
 from api.errors import ApiError
+from shared import metrics
 from shared.config import Settings
 from shared.db.models import TenantPlan
 
@@ -117,7 +118,8 @@ async def limit_requests(
 ) -> None:
     """Every API request of a caller (API key or user) counts against its plan's limit."""
     limit = requests_per_minute(principal.plan, settings)
-    _check(await limiter.hit(f"requests:{principal.rate_key}", limit), response)
+    decision = await limiter.hit(f"requests:{principal.rate_key}", limit)
+    _check(decision, response, limit="requests")
 
 
 async def limit_questions(
@@ -137,17 +139,21 @@ async def limit_questions(
     if is_public_key(principal):
         visitor = request.client.host if request.client else "unknown"
         bucket = f"questions:{principal.rate_key}:visitor:{visitor}"
-        _check(await limiter.hit(bucket, settings.rate_limit_visitor_questions), response)
+        decision = await limiter.hit(bucket, settings.rate_limit_visitor_questions)
+        _check(decision, response, limit="visitor")
         show_key_numbers = False
     limit = questions_per_minute(principal.plan, settings)
     decision = await limiter.hit(f"questions:{principal.rate_key}", limit)
-    _check(decision, response, set_headers=show_key_numbers)
+    _check(decision, response, limit="questions", set_headers=show_key_numbers)
 
 
-def _check(decision: Decision | None, response: Response, *, set_headers: bool = True) -> None:
+def _check(
+    decision: Decision | None, response: Response, *, limit: str, set_headers: bool = True
+) -> None:
     if decision is None:  # Redis is down: allow, and send no numbers that we do not know
         return
     if not decision.allowed:
+        metrics.RATE_LIMITED.labels(limit=limit).inc()
         raise too_many_requests(decision)
     if set_headers:
         response.headers["X-RateLimit-Limit"] = str(decision.limit)
