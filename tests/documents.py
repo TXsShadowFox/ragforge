@@ -31,6 +31,16 @@ def make_pdf(pages: Sequence[str]) -> bytes:
     return _write_pdf(objects)
 
 
+def handbook_page(page: int) -> str:
+    """About 110 words. Only its middle line is special: it names `zone<page>`.
+
+    So a question about "zone37" has exactly one right page: 37.
+    """
+    filler = "Students should read this handbook carefully and follow every rule on campus."
+    special = f"Only students with a blue pass may enter zone{page} after dark."
+    return "\n".join([filler] * 4 + [special] + [filler] * 4)
+
+
 def make_docx(paragraphs: Sequence[str], table: Sequence[Sequence[str]] = ()) -> bytes:
     document = docx.Document()
     for text in paragraphs:

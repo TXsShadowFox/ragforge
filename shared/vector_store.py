@@ -89,6 +89,23 @@ async def count_document_vectors(
     return result.count
 
 
+async def search_chunks(
+    client: AsyncQdrantClient,
+    collection: str,
+    tenant_id: uuid.UUID,
+    vector: list[float],
+    limit: int,
+) -> list[uuid.UUID]:
+    """IDs of the tenant's chunks closest in meaning to `vector`, best first."""
+    tenant_only = models.Filter(
+        must=[models.FieldCondition(key="tenant_id", match=models.MatchValue(value=str(tenant_id)))]
+    )
+    result = await client.query_points(
+        collection, query=vector, query_filter=tenant_only, limit=limit, with_payload=False
+    )
+    return [uuid.UUID(str(point.id)) for point in result.points]
+
+
 def _point(tenant_id: uuid.UUID, document_id: uuid.UUID, chunk: ChunkVector) -> models.PointStruct:
     return models.PointStruct(
         id=str(chunk.chunk_id),

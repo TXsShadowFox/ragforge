@@ -9,6 +9,8 @@ from typing import Annotated
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.ai import AIServices
+from api.chat.service import ChatService
 from api.readiness import DependencyCheck
 from shared.clients import Clients
 from shared.config import Settings
@@ -32,12 +34,25 @@ def get_clients(request: Request) -> Clients:
     return clients
 
 
+def get_ai(request: Request) -> AIServices:
+    """The embedder, the reranker and the LLM, loaded at startup."""
+    ai: AIServices = request.app.state.ai
+    return ai
+
+
 async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
     """One database session per request. Routes commit their own changes."""
     async with get_clients(request).sessions() as session:
         yield session
 
 
+def get_chat_service(request: Request) -> ChatService:
+    return ChatService(get_app_settings(request), get_clients(request), get_ai(request))
+
+
 SettingsDep = Annotated[Settings, Depends(get_app_settings)]
 ClientsDep = Annotated[Clients, Depends(get_clients)]
-SessionDep = Annotated[AsyncSession, Depends(get_session)]
+# scope="function": the session closes when the route function returns, before the response
+# is sent. So a streamed answer does not keep a database connection while the LLM writes.
+SessionDep = Annotated[AsyncSession, Depends(get_session, scope="function")]
+ChatServiceDep = Annotated[ChatService, Depends(get_chat_service)]

@@ -175,6 +175,8 @@ services:
 
   api:
     <<: *ragforge-app
+    # Loads the embedder and the reranker at startup (~15 s; ~0.5 GB of RAM).
+    # The LLM is outside (Groq by default: LLM_API_KEY in .env).
     ports:
       - "8000:8000"
     depends_on:

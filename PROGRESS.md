@@ -37,15 +37,19 @@ Checklist of the phases in [PROJECT_SPEC.md](PROJECT_SPEC.md). Updated after eve
 - [x] Tests: 163 (118 unit + 45 integration), incl. retries, dead-letter queue, tenant isolation
 - [x] Measured: `EMBEDDING_BATCH_SIZE` 32 -> 8 cut worker RAM 941 -> 594 MB and time 16.5 -> 11.3 s
 
-## Phase 3: Retrieval + chat
+## Phase 3: Retrieval + chat (done)
 
-- [ ] Hybrid retrieval: Postgres full-text + Qdrant dense, merged with RRF
-- [ ] Rerank the top 20, keep the top 5
-- [ ] Prompt rules: answer only from context, say "I don't know", cite as [1], [2]
-- [ ] LLM provider interface with streaming; SSE endpoint
-- [ ] Citations: document name, page, snippet
-- [ ] Chat history + rewriting follow-up questions
-- [ ] Tenant isolation test: tenant A never sees tenant B's data
+- [x] Hybrid retrieval: Postgres full-text (words joined with OR) + Qdrant dense, merged with RRF
+- [x] Rerank the top 20 (ms-marco-MiniLM-L-6-v2), keep the top 5; "not relevant" below -5
+- [x] Prompt rules: answer only from context, say "I don't know", cite as [1], [2]
+- [x] LLM provider interface (any OpenAI-compatible API; Groq gpt-oss-20b by default) with
+      streaming; SSE on `POST /v1/chat` with `"stream": true`
+- [x] Citations: document name, exact page (chunks never cross pages), snippet
+- [x] Chat history + rewriting follow-up questions; feedback (`POST /v1/messages/{id}/feedback`)
+- [x] Tenant isolation test: tenant A never sees tenant B's data (not even in the prompt)
+- [x] Real check (Docker, real models, Groq): 5 of 5 questions right with exact pages;
+      "capital of France" -> "I don't know" without an LLM call; first word after 0.54 s
+- [x] Tests: 206 (145 unit + 61 integration)
 
 ## Phase 4: Caching, rate limits, cost tracking
 

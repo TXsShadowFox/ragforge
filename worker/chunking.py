@@ -1,16 +1,18 @@
 """Split a document's text into chunks of at most `chunk_size` tokens.
 
-1. Cut the text into small units: sentences or lines. A unit that is still too long is
+1. Each page is chunked on its own: a chunk never crosses a page break, so its citation
+   names exactly one page, and a short page is not mixed with its neighbours' text.
+   (Formats without pages are one long "page".)
+2. Cut the page into small units: sentences or lines. A unit that is still too long is
    cut into words, and a word that is still too long is cut in halves.
-2. Pack units into chunks of at most `chunk_size` tokens.
-3. Start each new chunk with the last units of the one before, up to `overlap` tokens,
+3. Pack units into chunks of at most `chunk_size` tokens.
+4. Start each new chunk with the last units of the one before, up to `overlap` tokens,
    so a fact on the border between two chunks is complete in at least one of them.
 
 Tokens are counted with the embedding model's own tokenizer, so a chunk is never cut off
-by the model. Each chunk remembers the PDF page where it starts.
+by the model.
 """
 
-import bisect
 import re
 import uuid
 from collections.abc import Callable, Sequence
@@ -20,7 +22,6 @@ from worker.parsing import Page
 
 CountTokens = Callable[[str], int]
 
-PAGE_SEPARATOR = "\n\n"
 # Where a unit ends: after line breaks, or after the end of a sentence (. ! ? and spaces).
 _UNIT_END = re.compile(r"\n+|(?<=[.!?])[ \t]+")
 # Where a word ends: after whitespace.
@@ -31,13 +32,12 @@ _WORD_END = re.compile(r"(?<=\s)")
 class TextChunk:
     index: int  # 0, 1, 2, ... in reading order
     text: str
-    page_number: int | None
+    page_number: int | None  # the PDF page; None for formats without pages
     token_count: int
 
 
 @dataclass(frozen=True, slots=True)
 class _Unit:
-    start: int  # where the unit starts in the joined text of the document
     text: str
     tokens: int
 
@@ -53,78 +53,45 @@ def chunk_id(document_id: uuid.UUID, index: int) -> uuid.UUID:
 def chunk_document(
     pages: Sequence[Page], count_tokens: CountTokens, chunk_size: int, overlap: int
 ) -> list[TextChunk]:
-    text, page_starts, page_numbers = _join_pages(pages)
-    units = _split_into_units(text, count_tokens, chunk_size)
     chunks: list[TextChunk] = []
-    for group in _pack(units, chunk_size, overlap):
-        chunk_text = "".join(unit.text for unit in group).strip()
-        first = group[0]
-        start = first.start + len(first.text) - len(first.text.lstrip())
-        chunks.append(
-            TextChunk(
-                index=len(chunks),
-                text=chunk_text,
-                page_number=_page_at(start, page_starts, page_numbers),
-                token_count=count_tokens(chunk_text),
-            )
-        )
-    return chunks
-
-
-def _join_pages(pages: Sequence[Page]) -> tuple[str, list[int], list[int | None]]:
-    """All page texts in one string, and where each page starts in it."""
-    parts: list[str] = []
-    starts: list[int] = []
-    numbers: list[int | None] = []
-    offset = 0
     for page in pages:
-        if not page.text:
-            continue
-        if parts:
-            parts.append(PAGE_SEPARATOR)
-            offset += len(PAGE_SEPARATOR)
-        starts.append(offset)
-        numbers.append(page.number)
-        parts.append(page.text)
-        offset += len(page.text)
-    return "".join(parts), starts, numbers
-
-
-def _page_at(offset: int, starts: list[int], numbers: list[int | None]) -> int | None:
-    position = bisect.bisect_right(starts, offset) - 1
-    return numbers[position] if position >= 0 else None
+        units = _split_into_units(page.text, count_tokens, chunk_size)
+        for group in _pack(units, chunk_size, overlap):
+            text = "".join(unit.text for unit in group).strip()
+            chunks.append(
+                TextChunk(
+                    index=len(chunks),
+                    text=text,
+                    page_number=page.number,
+                    token_count=count_tokens(text),
+                )
+            )
+    return chunks
 
 
 def _split_into_units(text: str, count_tokens: CountTokens, limit: int) -> list[_Unit]:
     units: list[_Unit] = []
     start = 0
     for match in _UNIT_END.finditer(text):
-        units.extend(_fit(text[start : match.end()], start, count_tokens, limit))
+        units.extend(_fit(text[start : match.end()], count_tokens, limit))
         start = match.end()
-    units.extend(_fit(text[start:], start, count_tokens, limit))
+    units.extend(_fit(text[start:], count_tokens, limit))
     return [unit for unit in units if unit.text.strip()]
 
 
-def _fit(text: str, start: int, count_tokens: CountTokens, limit: int) -> list[_Unit]:
+def _fit(text: str, count_tokens: CountTokens, limit: int) -> list[_Unit]:
     """`text` as one unit if it fits; otherwise cut into words, or into halves."""
     if not text:
         return []
     tokens = count_tokens(text)
     if tokens <= limit:
-        return [_Unit(start, text, tokens)]
+        return [_Unit(text, tokens)]
     words = [word for word in _WORD_END.split(text) if word]
     if len(words) > 1:
-        units: list[_Unit] = []
-        offset = start
-        for word in words:
-            units.extend(_fit(word, offset, count_tokens, limit))
-            offset += len(word)
-        return units
+        return [unit for word in words for unit in _fit(word, count_tokens, limit)]
     # One very long "word", like a long URL: cut it in two halves until each part fits.
     middle = len(text) // 2
-    return _fit(text[:middle], start, count_tokens, limit) + _fit(
-        text[middle:], start + middle, count_tokens, limit
-    )
+    return _fit(text[:middle], count_tokens, limit) + _fit(text[middle:], count_tokens, limit)
 
 
 def _pack(units: list[_Unit], limit: int, overlap: int) -> list[list[_Unit]]:

@@ -75,6 +75,24 @@ class Settings(BaseSettings):
     ingest_retry_delays_seconds: list[PositiveInt] = Field(default_factory=lambda: [10, 60, 300])
     outbox_poll_seconds: PositiveFloat = 1.0
 
+    # --- LLM: any OpenAI-compatible chat API (Groq, Ollama, OpenAI, ...) ---
+    llm_base_url: str = "https://api.groq.com/openai/v1"
+    llm_model: str = "openai/gpt-oss-20b"
+    llm_api_key: SecretStr | None = None  # not needed for a local Ollama
+    llm_timeout_seconds: PositiveFloat = 60.0
+    llm_max_output_tokens: PositiveInt = 1024
+    llm_temperature: float = Field(default=0.1, ge=0, le=2)
+    # How long "reasoning" models (like gpt-oss) think first. "none": do not send it.
+    llm_reasoning_effort: Literal["none", "low", "medium", "high"] = "low"
+
+    # --- Search and chat ---
+    rerank_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
+    search_candidates: int = Field(default=20, ge=1, le=100)  # from each search, then reranked
+    # Below this reranker score a chunk is "not relevant". Measured for the default reranker:
+    # relevant chunks scored -0.4 to 9.7, unrelated ones about -11 (CLAUDE.md, D33).
+    min_rerank_score: float = -5.0
+    chat_history_messages: int = Field(default=6, ge=0, le=50)
+
     @model_validator(mode="after")
     def _overlap_is_smaller_than_a_chunk(self) -> Self:
         if self.chunk_overlap_tokens >= self.chunk_size_tokens:

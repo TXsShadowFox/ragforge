@@ -9,6 +9,7 @@ Rules:
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar
 
@@ -20,9 +21,11 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     MetaData,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
+    false,
     func,
     text,
 )
@@ -81,6 +84,16 @@ class DocumentStatus(StrEnum):
 class JobType(StrEnum):
     INGEST = "ingest"  # read, chunk and embed a document
     DELETE = "delete"  # remove a document from Postgres, Qdrant and storage
+
+
+class MessageRole(StrEnum):
+    USER = "user"
+    ASSISTANT = "assistant"
+
+
+class FeedbackRating(StrEnum):
+    UP = "up"
+    DOWN = "down"
 
 
 def _text_enum(enum_class: type[StrEnum], name: str) -> Enum:
@@ -188,7 +201,7 @@ class Chunk(Base):
     document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"))
     chunk_index: Mapped[int]  # 0, 1, 2, ... in reading order
     text: Mapped[str] = mapped_column(Text)
-    page_number: Mapped[int | None]  # the PDF page where the chunk starts; None for other files
+    page_number: Mapped[int | None]  # the PDF page (chunks never cross pages); None: no pages
     token_count: Mapped[int]
     tsv: Mapped[str] = mapped_column(
         TSVECTOR, Computed("to_tsvector('english', text)", persisted=True)
@@ -210,3 +223,55 @@ class OutboxMessage(Base):
     job_type: Mapped[JobType] = mapped_column(_text_enum(JobType, "job_type"))
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
     created_at: Mapped[CreatedAt]
+
+
+class ChatSession(Base):
+    """A conversation. Follow-up questions use its earlier messages."""
+
+    __tablename__ = "chat_sessions"
+
+    id: Mapped[UuidPk]
+    tenant_id: Mapped[TenantId]
+    created_at: Mapped[CreatedAt]
+
+
+class Message(Base):
+    """One question (role "user") or one answer (role "assistant") in a chat session.
+
+    IDs are uuidv7 and made in order, so sorting by ID gives the conversation order.
+    """
+
+    __tablename__ = "messages"
+    __table_args__ = (Index("ix_messages_session_id_id", "session_id", "id"),)
+
+    id: Mapped[UuidPk]
+    tenant_id: Mapped[TenantId]
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("chat_sessions.id", ondelete="CASCADE")
+    )
+    role: Mapped[MessageRole] = mapped_column(_text_enum(MessageRole, "message_role"))
+    content: Mapped[str] = mapped_column(Text)
+    # For answers: the sources the answer cites (document, page, snippet).
+    citations: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, server_default=text("'[]'"))
+    latency_ms: Mapped[int | None]  # answers: from the question to the full answer
+    tokens_in: Mapped[int | None]  # answers: tokens the LLM read (the prompt)
+    tokens_out: Mapped[int | None]  # answers: tokens the LLM wrote
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))  # filled in Phase 4
+    cache_hit: Mapped[bool] = mapped_column(server_default=false())  # used in Phase 4
+    created_at: Mapped[CreatedAt]
+
+
+class Feedback(Base):
+    """A thumbs up or down for an answer. One per answer: a new one replaces the old one."""
+
+    __tablename__ = "feedback"
+
+    id: Mapped[UuidPk]
+    tenant_id: Mapped[TenantId]
+    message_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("messages.id", ondelete="CASCADE"), unique=True
+    )
+    rating: Mapped[FeedbackRating] = mapped_column(_text_enum(FeedbackRating, "feedback_rating"))
+    comment: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[CreatedAt]
+    updated_at: Mapped[UpdatedAt]

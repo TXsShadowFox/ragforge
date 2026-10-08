@@ -31,7 +31,7 @@ from shared.db.models import Base
 from shared.init import init_stores
 from shared.jobs import DEAD_QUEUE, JOBS_QUEUE, retry_queue
 from shared.vector_store import ensure_collection
-from tests.fakes import FakeEmbedder
+from tests.fakes import FakeEmbedder, fake_ai
 from tests.integration.helpers import running_worker
 
 COMPOSE_FILE = Path(__file__).resolve().parents[2] / "docker-compose.yml"
@@ -177,7 +177,7 @@ async def db_engine(db_settings: Settings) -> AsyncIterator[AsyncEngine]:
 async def api(db_settings: Settings, db_engine: AsyncEngine) -> AsyncIterator[AsyncClient]:
     """An HTTP client for the app (with its startup hooks), on an empty database."""
     await empty_all_tables(db_engine)
-    app = create_app(db_settings)
+    app = create_app(db_settings, ai=fake_ai())
     async with (
         app.router.lifespan_context(app),
         AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
@@ -261,7 +261,7 @@ async def stack_clients(clean_stack: Settings) -> AsyncIterator[Clients]:
 @pytest.fixture
 async def docs_api(clean_stack: Settings) -> AsyncIterator[AsyncClient]:
     """An HTTP client for the app, using the whole stack."""
-    app = create_app(clean_stack)
+    app = create_app(clean_stack, ai=fake_ai())
     async with (
         app.router.lifespan_context(app),
         AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,

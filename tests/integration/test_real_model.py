@@ -1,6 +1,6 @@
-"""The real embedding model (bge-small-en-v1.5 with fastembed).
+"""The real models: the embedder (bge-small-en-v1.5) and the reranker (ms-marco-MiniLM-L-6-v2).
 
-The first run downloads the model (67 MB) into MODEL_CACHE_DIR; CI keeps it in its cache.
+The first run downloads them (67 MB + 80 MB) into MODEL_CACHE_DIR; CI keeps them in its cache.
 """
 
 import math
@@ -10,16 +10,28 @@ import pytest
 
 from shared.config import Settings
 from shared.embeddings import FastEmbedEmbedder
+from shared.rerank import FastEmbedReranker
 
 pytestmark = pytest.mark.integration
+
+DEFAULTS = Settings.model_fields
+PASSAGES = [
+    "Students must attend at least 75 percent of classes to sit the final exam.",
+    "Books can be borrowed for two weeks. A late fee of 5 rupees per day applies after that.",
+    "The hostel gates close at 10 pm. Visitors are allowed only in the common room.",
+]
 
 
 @pytest.fixture(scope="module")
 def embedder() -> FastEmbedEmbedder:
-    defaults = Settings.model_fields
     return FastEmbedEmbedder(
-        defaults["embedding_model"].default, defaults["model_cache_dir"].default
+        DEFAULTS["embedding_model"].default, DEFAULTS["model_cache_dir"].default
     )
+
+
+@pytest.fixture(scope="module")
+def reranker() -> FastEmbedReranker:
+    return FastEmbedReranker(DEFAULTS["rerank_model"].default, DEFAULTS["model_cache_dir"].default)
 
 
 def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
@@ -49,3 +61,35 @@ def test_texts_with_the_same_meaning_are_close(embedder: FastEmbedEmbedder) -> N
 
     assert len(question) == 384
     assert _cosine(question, answer) > _cosine(question, unrelated)
+
+
+def test_a_search_question_finds_its_passage(embedder: FastEmbedEmbedder) -> None:
+    question = embedder.embed_query("When do the hostel gates close?")
+    passages = embedder.embed_documents(PASSAGES)
+
+    similarities = [_cosine(question, passage) for passage in passages]
+
+    assert similarities.index(max(similarities)) == 2
+
+
+@pytest.mark.parametrize(
+    ("question", "best"),
+    [
+        ("What is the minimum attendance to write the exam?", 0),
+        ("How long can I keep a library book?", 1),
+        ("When do the hostel gates close?", 2),
+    ],
+)
+def test_the_reranker_puts_the_right_passage_first_and_above_the_threshold(
+    reranker: FastEmbedReranker, question: str, best: int
+) -> None:
+    scores = reranker.rerank(question, PASSAGES)
+
+    assert scores.index(max(scores)) == best
+    assert max(scores) >= DEFAULTS["min_rerank_score"].default
+
+
+def test_an_unrelated_question_scores_below_the_threshold(reranker: FastEmbedReranker) -> None:
+    scores = reranker.rerank("What is the capital of France?", PASSAGES)
+
+    assert max(scores) < DEFAULTS["min_rerank_score"].default

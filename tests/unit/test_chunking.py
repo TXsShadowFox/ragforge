@@ -85,15 +85,28 @@ def test_a_very_long_word_is_cut_into_parts() -> None:
     assert all(chunk.token_count <= 40 for chunk in [first, second, *rest])
 
 
-def test_chunks_know_the_page_where_they_start() -> None:
+def test_chunks_know_their_page() -> None:
     pages = [Page(1, _sentences(5, prefix="a")), Page(2, _sentences(5, prefix="b"))]
 
     chunks = chunk_document(pages, count_words, 30, 0)
 
     for chunk in chunks:
-        first_word = chunk.text.split()[0]
-        assert chunk.page_number == (1 if first_word.startswith("a") else 2)
+        assert {word[0] for word in chunk.text.split()} == {"a" if chunk.page_number == 1 else "b"}
     assert {chunk.page_number for chunk in chunks} == {1, 2}
+
+
+def test_a_chunk_never_crosses_a_page_break() -> None:
+    # Two short pages would fit in one 50-word chunk, but each page gets its own chunk,
+    # so a citation always names exactly one page.
+    pages = [Page(1, "The fee is due in May."), Page(2, "Late fees start in June.")]
+
+    chunks = chunk_document(pages, count_words, 50, 10)
+
+    assert [(chunk.page_number, chunk.text) for chunk in chunks] == [
+        (1, "The fee is due in May."),
+        (2, "Late fees start in June."),
+    ]
+    assert [chunk.index for chunk in chunks] == [0, 1]
 
 
 def test_chunk_ids_are_the_same_every_time() -> None:

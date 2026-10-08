@@ -2,41 +2,52 @@
 
 uvicorn runs `create_app_from_env` (`make dev` and the Docker image do this for you):
 `python -m uvicorn api.main:create_app_from_env --factory`.
-Tests call `create_app` with their own settings.
+Tests call `create_app` with their own settings (and fake AI models).
 """
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from importlib.metadata import version
 
 from fastapi import FastAPI
 
+from api.ai import AIServices, load_ai_services
 from api.errors import install_error_handlers
 from api.middleware import RequestContextMiddleware
 from api.readiness import build_checks
-from api.routes import api_keys, auth, documents, me, system
+from api.routes import api_keys, auth, chat, documents, feedback, me, system
 from shared.clients import Clients
 from shared.config import Settings, get_settings
 from shared.logging import configure_logging
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Create the service clients at startup and close them at shutdown."""
+    """Create the service clients and load the AI models at startup; close them at shutdown."""
     settings: Settings = app.state.settings
+    ai: AIServices | None = app.state.ai_override
+    if ai is None:
+        logger.info("Loading the embedding and reranking models")
+        ai = await load_ai_services(settings)
     clients = Clients.create(settings)
+    app.state.ai = ai
     app.state.clients = clients
     app.state.ready_checks = build_checks(clients, settings)
     try:
         yield
     finally:
+        await ai.llm.aclose()
         await clients.aclose()
 
 
-def create_app(settings: Settings) -> FastAPI:
-    """Build the app with the given settings."""
+def create_app(settings: Settings, *, ai: AIServices | None = None) -> FastAPI:
+    """Build the app. `ai`: use these models instead of loading the real ones (tests)."""
     app = FastAPI(title="RAGForge API", version=version("ragforge"), lifespan=lifespan)
     app.state.settings = settings
+    app.state.ai_override = ai
     install_error_handlers(app)
     app.add_middleware(RequestContextMiddleware)
     app.include_router(system.router)
@@ -44,6 +55,8 @@ def create_app(settings: Settings) -> FastAPI:
     app.include_router(api_keys.router)
     app.include_router(me.router)
     app.include_router(documents.router)
+    app.include_router(chat.router)
+    app.include_router(feedback.router)
     return app
 
 

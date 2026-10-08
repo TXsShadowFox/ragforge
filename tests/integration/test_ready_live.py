@@ -8,6 +8,7 @@ from pydantic import RedisDsn
 
 from api.main import create_app
 from shared.config import Settings
+from tests.fakes import fake_ai
 
 pytestmark = pytest.mark.integration
 
@@ -16,7 +17,7 @@ ALL_SERVICES = ["postgres", "redis", "qdrant", "storage"]  # the API does not us
 
 async def _get_ready(settings: Settings) -> tuple[int, dict[str, Any]]:
     """Start the app (with its startup hooks), call /ready, then shut it down."""
-    app = create_app(settings)
+    app = create_app(settings, ai=fake_ai())
     transport = ASGITransport(app=app)
     async with (
         app.router.lifespan_context(app),

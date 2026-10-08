@@ -32,6 +32,17 @@ class Embedder(Protocol):
         """One vector per text. May be slow: call it with `asyncio.to_thread`."""
         ...
 
+    def embed_query(self, text: str) -> list[float]:
+        """The vector of a search question (some models want an instruction in front)."""
+        ...
+
+
+# Text that some models want in front of a search question (from their model cards).
+# Documents get no instruction, so short questions and long chunks still match well.
+QUERY_INSTRUCTIONS = {
+    "baai/bge-small-en-v1.5": "Represent this sentence for searching relevant passages: ",
+}
+
 
 def embedding_dimension(model_name: str) -> int:
     """How many numbers a fastembed model's vectors have, without downloading the model."""
@@ -52,6 +63,7 @@ class FastEmbedEmbedder:
         self._model = TextEmbedding(model_name=model_name, cache_dir=str(cache_dir))
         self._batch_size = batch_size
         self._dimension = embedding_dimension(model_name)
+        self._query_instruction = QUERY_INSTRUCTIONS.get(model_name.lower(), "")
         # fastembed keeps the tokenizer on its inner model object (not a public attribute).
         model_tokenizer = getattr(self._model.model, "tokenizer", None)
         truncation = getattr(model_tokenizer, "truncation", None)
@@ -77,3 +89,7 @@ class FastEmbedEmbedder:
     def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
         vectors = self._model.passage_embed(list(texts), batch_size=self._batch_size)
         return [vector.tolist() for vector in vectors]
+
+    def embed_query(self, text: str) -> list[float]:
+        [vector] = self._model.query_embed([self._query_instruction + text])
+        return [float(number) for number in vector]

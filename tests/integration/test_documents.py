@@ -18,6 +18,7 @@ from shared.config import Settings
 from shared.db.models import Chunk, OutboxMessage
 from shared.vector_store import count_document_vectors
 from tests.documents import make_docx, make_pdf
+from tests.fakes import fake_ai
 from tests.integration.helpers import (
     running_worker,
     sign_up,
@@ -196,7 +197,7 @@ async def test_bad_uploads_are_refused(
 
 
 async def test_a_file_over_the_size_limit_is_refused(clean_stack: Settings) -> None:
-    app = create_app(clean_stack.model_copy(update={"max_upload_mb": 1}))
+    app = create_app(clean_stack.model_copy(update={"max_upload_mb": 1}), ai=fake_ai())
     async with (
         app.router.lifespan_context(app),
         AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
