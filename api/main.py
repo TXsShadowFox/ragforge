@@ -17,9 +17,14 @@ from fastapi.telemetry import TelemetryConfig
 
 from api.ai import AIServices, load_ai_services
 from api.errors import install_error_handlers
-from api.middleware import QUIET_PATHS, REQUEST_ID_HEADER, RequestContextMiddleware
-from api.ratelimit import RateLimiter
-from api.readiness import build_checks
+from api.limiter import RateLimiter
+from api.middleware import (
+    QUIET_PATHS,
+    REQUEST_ID_HEADER,
+    RequestContextMiddleware,
+    RequestSizeLimitMiddleware,
+)
+from api.readiness import build_checks, run_checks
 from api.routes import (
     analytics,
     api_keys,
@@ -69,6 +74,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.ready_checks = build_checks(clients, settings)
     app.state.answer_cache = AnswerCache(clients.redis, clients.qdrant, settings)
     app.state.rate_limiter = RateLimiter(clients.redis)
+    # Open a connection to each service now (the /ready probes), so the first user does
+    # not wait for them. A service that is down only logs a warning here.
+    await run_checks(app.state.ready_checks, settings.ready_check_timeout_seconds)
     try:
         yield
     finally:
@@ -87,6 +95,12 @@ def create_app(settings: Settings, *, ai: AIServices | None = None) -> FastAPI:
     metrics.start_api_metrics()
     app.state.ai_override = ai
     install_error_handlers(app)
+    # Added first, so it runs inside RequestContextMiddleware: a 413 also gets a request ID.
+    app.add_middleware(
+        RequestSizeLimitMiddleware,
+        max_bytes=settings.max_request_kb * 1024,
+        max_upload_bytes=settings.max_upload_bytes,
+    )
     app.add_middleware(RequestContextMiddleware)
     # Added last, so it runs first (even before a crash is turned into a 500). Browsers on
     # other websites (the chat widget) may call the API. We use no cookies, so this

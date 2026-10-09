@@ -122,7 +122,7 @@ def _rewrite(messages: Sequence[ChatMessage]) -> str:
 
 
 def _answer(messages: Sequence[ChatMessage]) -> str:
-    source = re.search(r"^\[1\] .*\n(.*)$", messages[-1].content, flags=re.MULTILINE)
+    source = re.search(r'^<source id="1"[^>]*>\n(.*)$', messages[-1].content, flags=re.MULTILINE)
     if source is None:
         return "I don't know based on the documents."
     return f"From the documents: {' '.join(source.group(1).split()[:8])} [1]."

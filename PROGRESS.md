@@ -106,11 +106,28 @@ Checklist of the phases in [PROJECT_SPEC.md](PROJECT_SPEC.md). Updated after eve
       after a start takes 10.3 s
 - [x] Tests: Python 297 (194 unit + 103 integration), dashboard and widget 52 (Vitest)
 
-## Phase 7: Load testing + hardening
+## Phase 7: Load testing + hardening (done)
 
-- [ ] k6 scripts: chat (cached / not cached), upload
-- [ ] Find and fix at least one bottleneck, with before/after numbers in `loadtests/RESULTS.md`
-- [ ] Security: size limits, file type checks, prompt-injection guard, CORS, secrets only from env
+- [x] k6 scripts (`make loadtest`, k6 in Docker): chat answered from the cache, chat with new
+      questions (the whole RAG path), uploads; a fake OpenAI-compatible LLM, so the load is on
+      our code. Report with before/after numbers: [loadtests/RESULTS.md](loadtests/RESULTS.md)
+- [x] Bottleneck 1, a database pool deadlock: each chat request kept the login check's
+      connection and needed a second one. Cached answers, 50 users: 92% errors -> 0%, 70 a second
+- [x] Bottleneck 2, the reranker: every question ran it at once, and 10 users ran the API out of
+      memory (it was killed). Now at most 2 runs at a time and 10 candidates instead of 20:
+      10-20 users without errors; new answers 0.7 -> 1.7 a second; 1 user p50 2.0 -> 1.3 s;
+      search quality unchanged in `make eval`
+- [x] Cold start: warm-up with real sizes and connections opened at startup (first answer after
+      a new image: 7.5 -> 1.9 s)
+- [x] Fewer tokens: only sources close to the best score (`SOURCE_SCORE_MARGIN`): 1.67 sources
+      and 870 input tokens per answer (was 3.4 and 1,442); correctness 0.97, faithfulness 1.00
+- [x] Security: request-size limit (413 before the body is read); rate limits per IP address
+      (logins, sign-ups, wrong keys); prompt-injection guard (sources in `<source>` tags that a
+      document cannot close; the evaluation's planted instructions were followed in 0 of 2
+      answers); security headers on the API and a Content-Security-Policy on the dashboard; a
+      test that secrets have no defaults; CORS (D50) and file type checks (D28) reviewed
+- [x] CI runs the browser test on every push (the stack with the fake LLM, Chromium)
+- [x] Tests: Python 330 (222 unit + 108 integration), dashboard and widget 54 (Vitest), 1 end-to-end
 
 ## Phase 8: Deploy + docs
 
@@ -123,7 +140,7 @@ Checklist of the phases in [PROJECT_SPEC.md](PROJECT_SPEC.md). Updated after eve
 - [ ] All phases done, tests passing, CI green
 - [ ] Tenant isolation proven by tests
 - [x] Eval report with numbers
-- [ ] Load test report with before/after numbers
+- [x] Load test report with before/after numbers
 - [x] Grafana dashboard
 - [ ] README + SYSTEM_DESIGN.md + architecture diagram
 - [ ] Live demo link

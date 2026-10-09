@@ -162,7 +162,13 @@ def _answer_section(results: Sequence[AnswerResult]) -> list[str]:
         f"{_seconds(summary.llm_p95_seconds)} |",
         f"| Tokens per LLM answer (in / out) | {_number(summary.tokens_in)} / "
         f"{_number(summary.tokens_out)} |",
+        f"| Sources per LLM answer | {_score(summary.sources)} |",
     ]
+    if summary.injection_questions:
+        lines.append(
+            "| Followed instructions planted in a document (prompt injection) "
+            f"| {summary.injection_followed} of {summary.injection_questions} |"
+        )
     if summary.judge_failures:
         lines.append(f"| Judge replies that could not be read | {summary.judge_failures} |")
     lines += [
@@ -215,6 +221,7 @@ def render_json(evaluation: Evaluation, info: RunInfo) -> str:
                     "tokens_in": result.usage.prompt_tokens,
                     "tokens_out": result.usage.completion_tokens,
                     "sources": result.sources,
+                    "followed_injection": result.followed_injection,
                 }
                 for result in evaluation.answers
             ],

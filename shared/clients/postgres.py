@@ -13,7 +13,13 @@ from shared.config import Settings
 
 def create_engine(settings: Settings) -> AsyncEngine:
     """Create the connection pool. It only connects when first used."""
-    return create_async_engine(str(settings.database_url), pool_pre_ping=True)
+    return create_async_engine(
+        str(settings.database_url),
+        pool_pre_ping=True,
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_max_overflow,
+        pool_timeout=settings.db_pool_timeout_seconds,
+    )
 
 
 def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:

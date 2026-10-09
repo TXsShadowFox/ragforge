@@ -4,15 +4,19 @@ The handbook has 50 pages; only page N mentions "zoneN". The fake reranker count
 words, and MIN_RERANK_SCORE=1 here, so a chunk needs a word in common to be "relevant".
 """
 
+from collections.abc import Sequence
+
 import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from api.ai import AIServices
 from api.chat.prompts import NO_ANSWER
+from api.main import create_app
 from shared.config import Settings
 from shared.db.models import Chunk, Feedback, Message, MessageRole
-from tests.fakes import FailingLLM, FakeLLM
+from tests.fakes import FailingLLM, FakeEmbedder, FakeLLM, FakeReranker
 from tests.integration.helpers import (
     ask,
     chat_client,
@@ -71,9 +75,9 @@ async def test_the_llm_reads_at_most_top_k_sources(
     await ask(chat_api, owner, "Who may enter after dark?", top_k=2)
 
     [call] = fake_llm.calls
-    assert "[1] handbook.pdf" in call[-1].content
-    assert "[2] handbook.pdf" in call[-1].content
-    assert "[3] " not in call[-1].content
+    assert '<source id="1" location="handbook.pdf' in call[-1].content
+    assert '<source id="2" location="handbook.pdf' in call[-1].content
+    assert '<source id="3"' not in call[-1].content
 
 
 async def test_tenants_never_get_each_others_text(
@@ -241,3 +245,51 @@ async def test_an_llm_failure_gives_503_or_an_error_event(
     assert sse_events(streamed.text)[-1][1]["code"] == "llm_unavailable"
     async with db_engine.connect() as connection:  # failed turns are not saved
         assert await connection.scalar(select(func.count()).select_from(Message)) == 0
+
+
+async def test_a_chat_answer_never_needs_two_database_connections(chat_settings: Settings) -> None:
+    # Found by the load test: the login check kept its connection while the answer's steps
+    # needed another one, so under load each request held one and waited for a second
+    # (50 users: 92% errors). With one pooled connection, that waited until the timeout.
+    one_connection = chat_settings.model_copy(
+        update={"db_pool_size": 1, "db_max_overflow": 0, "db_pool_timeout_seconds": 2.0}
+    )
+    async with chat_client(one_connection) as client:
+        owner = await sign_up(client, "owner@example.com")
+        async with running_worker(chat_settings):  # the worker has its own, normal pool
+            document = await upload_and_wait(
+                client, owner, "zones.txt", b"Only staff may enter zone37."
+            )
+        assert document["status"] == "ready"
+
+        answer = await ask(client, owner, "Who may enter zone37?")
+
+    assert answer["citations"][0]["filename"] == "zones.txt"
+
+
+class RecordingReranker(FakeReranker):
+    """Remembers how many chunks each run scored."""
+
+    def __init__(self) -> None:
+        self.batches: list[int] = []
+
+    def rerank(self, query: str, texts: Sequence[str]) -> list[float]:
+        self.batches.append(len(texts))
+        return super().rerank(query, texts)
+
+
+async def test_the_reranker_scores_only_the_best_candidates(chat_settings: Settings) -> None:
+    settings = chat_settings.model_copy(update={"rerank_candidates": 3})
+    reranker = RecordingReranker()
+    app = create_app(settings, ai=AIServices(FakeEmbedder(), reranker, FakeLLM()))
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        owner = await sign_up(client, "owner@example.com")
+        await upload_handbook(client, owner, settings)  # 50 pages: each search finds 20
+
+        answer = await ask(client, owner, "Who may enter zone37?")
+
+    assert reranker.batches == [3]
+    assert answer["citations"][0]["page"] == 37  # the fusion had it near the top

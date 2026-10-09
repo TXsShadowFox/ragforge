@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field, StringConstraints
 
 from api.auth.principal import WidgetAccess, require_widget_access
 from api.chat.service import ChatSessionNotFoundError
-from api.dependencies import ChatServiceDep
+from api.dependencies import ChatServiceDep, release_db_connection
 from api.errors import ApiError, not_found
 from api.ratelimit import limit_questions, limit_requests
 from shared.llm import LLMBusyError, LLMError
@@ -27,6 +27,7 @@ from shared.llm import LLMBusyError, LLMError
 logger = logging.getLogger(__name__)
 # The widget's endpoint: public keys work here, from their allowed websites (checked
 # first). Each question counts twice: as a request, and against the questions limit.
+# Then the login check's database connection goes back to the pool for the answer.
 router = APIRouter(
     prefix="/v1",
     tags=["chat"],
@@ -34,6 +35,7 @@ router = APIRouter(
         Depends(require_widget_access),
         Depends(limit_requests),
         Depends(limit_questions),
+        Depends(release_db_connection),
     ],
 )
 

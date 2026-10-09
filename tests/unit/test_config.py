@@ -55,6 +55,21 @@ def test_env_example_is_valid_and_fills_in_passwords() -> None:
     assert settings.qdrant_api_key is None  # an empty value means "not set"
 
 
+def test_secrets_only_come_from_the_environment() -> None:
+    # A default value would be a password in the code (and in git). Secrets are required,
+    # or empty ("not set") when they are optional, like a local Ollama's missing API key.
+    secrets = {
+        name: field
+        for name, field in Settings.model_fields.items()
+        if "SecretStr" in str(field.annotation)
+    }
+    assert {"jwt_secret", "s3_secret_key", "llm_api_key", "qdrant_api_key"} <= set(secrets)
+    for name, field in secrets.items():
+        assert field.is_required() or field.default is None, name
+    for url in ("database_url", "redis_url", "rabbitmq_url"):  # they hold passwords too
+        assert Settings.model_fields[url].is_required(), url
+
+
 @pytest.mark.usefixtures("clean_env")
 def test_missing_secret_stops_the_app() -> None:
     with pytest.raises(ValidationError, match="database_url"):

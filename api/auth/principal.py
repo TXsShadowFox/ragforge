@@ -21,6 +21,7 @@ from api.auth.keys import hash_api_key, is_api_key, normalize_origin
 from api.auth.tokens import read_access_token
 from api.dependencies import SessionDep, SettingsDep
 from api.errors import ApiError, forbidden, unauthorized
+from api.limiter import client_ip, enforce, get_rate_limiter
 from shared.db.models import ApiKey, ApiKeyKind, Tenant, TenantPlan, User, UserRole
 from shared.logging import bind_log_context
 
@@ -77,6 +78,7 @@ async def get_principal(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     session: SessionDep,
     settings: SettingsDep,
+    request: Request,
 ) -> Principal:
     """Who is calling, from the Authorization header. 401 if we cannot tell."""
     if credentials is None:
@@ -86,10 +88,21 @@ async def get_principal(
         )
     token = credentials.credentials
     principal: Principal
-    if is_api_key(token):
-        principal = await _from_api_key(session, token)
-    else:
-        principal = await _from_login_token(session, token, settings.jwt_secret)
+    try:
+        if is_api_key(token):
+            principal = await _from_api_key(session, token)
+        else:
+            principal = await _from_login_token(session, token, settings.jwt_secret)
+    except ApiError:
+        # A wrong key or token. Guessing a key is hopeless (D13), but each try costs a
+        # database lookup: after too many from one IP address, 429 instead of 401.
+        await enforce(
+            get_rate_limiter(request),
+            f"auth_failures:{client_ip(request)}",
+            settings.auth_failures_per_ip_per_minute,
+            name="auth_failures",
+        )
+        raise
     bind_log_context(tenant_id=str(principal.tenant_id))
     return principal
 

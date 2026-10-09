@@ -33,6 +33,26 @@ class ApiError(Exception):
         self.headers = dict(headers or {})
 
 
+class RequestTooLargeError(StarletteHTTPException):
+    """The request body grew past its limit while it was read (api/middleware.py).
+
+    An HTTPException on purpose: FastAPI passes those on while it reads a body, so the
+    client gets our 413 (any other error there becomes a 400).
+    """
+
+    def __init__(self, limit_bytes: int) -> None:
+        super().__init__(status.HTTP_413_CONTENT_TOO_LARGE, detail=too_large_message(limit_bytes))
+
+
+def too_large_message(limit_bytes: int) -> str:
+    size = (
+        f"{limit_bytes // (1024 * 1024)} MB"
+        if limit_bytes >= 1024 * 1024
+        else f"{limit_bytes // 1024} KB"
+    )
+    return f"The request is bigger than the limit of {size}."
+
+
 def unauthorized(code: str, message: str) -> ApiError:
     """401: we do not know who is calling. The header tells clients to send a Bearer token."""
     return ApiError(
@@ -68,6 +88,7 @@ def install_error_handlers(app: FastAPI) -> None:
     """Send every error in our format. (Unexpected errors: see api/middleware.py.)"""
     # The decorator form accepts handlers for our exact exception types.
     app.exception_handler(ApiError)(_handle_api_error)
+    app.exception_handler(RequestTooLargeError)(_handle_request_too_large)
     app.exception_handler(StarletteHTTPException)(_handle_http_exception)
     app.exception_handler(RequestValidationError)(_handle_validation_error)
 
@@ -80,6 +101,21 @@ def _request_id(request: Request) -> str | None:
 async def _handle_api_error(request: Request, exc: ApiError) -> JSONResponse:
     return error_response(
         _request_id(request), exc.status_code, exc.code, exc.message, headers=exc.headers
+    )
+
+
+async def _handle_request_too_large(request: Request, exc: RequestTooLargeError) -> JSONResponse:
+    return request_too_large(_request_id(request), str(exc.detail))
+
+
+def request_too_large(request_id: str | None, message: str) -> JSONResponse:
+    """413. `Connection: close`: we stop reading, so the connection cannot be used again."""
+    return error_response(
+        request_id,
+        status.HTTP_413_CONTENT_TOO_LARGE,
+        "request_too_large",
+        message,
+        headers={"Connection": "close"},
     )
 
 

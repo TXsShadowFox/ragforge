@@ -65,3 +65,15 @@ ClientsDep = Annotated[Clients, Depends(get_clients)]
 # is sent. So a streamed answer does not keep a database connection while the LLM writes.
 SessionDep = Annotated[AsyncSession, Depends(get_session, scope="function")]
 ChatServiceDep = Annotated[ChatService, Depends(get_chat_service)]
+
+
+async def release_db_connection(session: SessionDep) -> None:
+    """Give the request session's connection back to the pool (the login check used it).
+
+    For routes that work for seconds without it, like a chat answer (which opens short
+    sessions of its own). The load test found why: each chat request kept this connection
+    and needed a second one, so 15 of them held the whole pool and waited for each other
+    until the pool timeout (50 users: 92% errors). Not for every route: two checkouts cost
+    short database routes like uploads 10-18% of their throughput.
+    """
+    await session.close()

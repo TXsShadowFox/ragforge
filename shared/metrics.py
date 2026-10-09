@@ -62,7 +62,8 @@ RETRIEVAL_DURATION = Histogram(
 )
 RATE_LIMITED = Counter(
     "ragforge_rate_limited",
-    "Requests refused with 429. limit: requests, questions, visitor or login.",
+    "Requests refused with 429. limit: requests, questions, visitor, login (per email), "
+    "login_ip, signup or auth_failures (wrong keys, per IP address).",
     ["limit"],
 )
 
@@ -92,7 +93,15 @@ def start_api_metrics() -> None:
         CHAT_ANSWERS.labels(source=source)
     for kind in ("busy", "error"):
         LLM_ERRORS.labels(kind=kind)
-    for limit in ("requests", "questions", "visitor", "login"):
+    for limit in (
+        "requests",
+        "questions",
+        "visitor",
+        "login",
+        "login_ip",
+        "signup",
+        "auth_failures",
+    ):
         RATE_LIMITED.labels(limit=limit)
 
 

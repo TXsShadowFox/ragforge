@@ -1,8 +1,11 @@
-"""Request context: a request ID for every request, one access log line, a safe 500,
-and the request's Prometheus metrics. FastAPI itself makes the request's span (see
-api/main.py); its trace ID goes into the log context, so logs lead to traces.
+"""Middleware for every request:
 
-This is a plain ASGI middleware, not Starlette's `BaseHTTPMiddleware`: that one runs the
+- RequestContextMiddleware: a request ID, one access log line, a safe 500, the request's
+  Prometheus metrics, and security headers. FastAPI itself makes the request's span (see
+  api/main.py); its trace ID goes into the log context, so logs lead to traces.
+- RequestSizeLimitMiddleware: a body that is too big gets 413 before it is read.
+
+Both are plain ASGI middleware, not Starlette's `BaseHTTPMiddleware`: that one runs the
 endpoint in another task, and values the endpoint adds to the log context (like the tenant)
 would not reach our access log line.
 """
@@ -15,7 +18,7 @@ import uuid
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from api.errors import error_response
+from api.errors import RequestTooLargeError, error_response, request_too_large, too_large_message
 from shared import metrics
 from shared.logging import log_context
 from shared.tracing import trace_id_fields
@@ -28,6 +31,17 @@ _SAFE_REQUEST_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
 # Docker and Prometheus call these every few seconds: log them only at DEBUG level, and
 # keep them out of the metrics and the traces.
 QUIET_PATHS = frozenset({"/health", "/metrics"})
+# On every response, unless the route set its own (like the cache time of /widget.js).
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",  # browsers must not guess another file type
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",  # no page of ours (like /docs) inside another website
+    "Content-Security-Policy": "frame-ancestors 'none'",
+    "Cache-Control": "no-store",  # answers, documents and keys never sit in a cache
+}
+# The upload route may receive MAX_UPLOAD_MB, plus room for the multipart form around the file.
+UPLOAD_ROUTE = ("POST", "/v1/documents")
+MULTIPART_OVERHEAD_BYTES = 64 * 1024
 
 
 class RequestContextMiddleware:
@@ -52,7 +66,10 @@ class RequestContextMiddleware:
             if message["type"] == "http.response.start":
                 response_started = True
                 status_code = message["status"]
-                MutableHeaders(scope=message)[REQUEST_ID_HEADER] = request_id
+                headers = MutableHeaders(scope=message)
+                headers[REQUEST_ID_HEADER] = request_id
+                for name, value in SECURITY_HEADERS.items():
+                    headers.setdefault(name, value)
             await send(message)
 
         with log_context(request_id=request_id, **trace_id_fields()):
@@ -70,6 +87,51 @@ class RequestContextMiddleware:
                 if not quiet:
                     _measure(scope, status_code, time.perf_counter() - started_at)
                 _log_request(scope, status_code, started_at)
+
+
+class RequestSizeLimitMiddleware:
+    """Refuse a request body that is too big (413), before reading it.
+
+    Uploads may be up to MAX_UPLOAD_MB, other requests up to MAX_REQUEST_KB. A request
+    that says its size (Content-Length) is refused at once; one sent in chunks is stopped
+    as soon as it has sent too much. Without this, Starlette read a whole upload before
+    the route could check its size.
+    """
+
+    def __init__(self, app: ASGIApp, *, max_bytes: int, max_upload_bytes: int) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+        self.max_upload_bytes = max_upload_bytes + MULTIPART_OVERHEAD_BYTES
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        is_upload = (scope["method"], scope["path"]) == UPLOAD_ROUTE
+        limit = self.max_upload_bytes if is_upload else self.max_bytes
+        declared = Headers(scope=scope).get("content-length", "")
+        if declared.isdigit() and int(declared) > limit:
+            request_id = scope.get("state", {}).get("request_id")
+            response = request_too_large(request_id, too_large_message(limit))
+            await response(scope, receive, send)
+            return
+        await self.app(scope, _limited(receive, limit), send)
+
+
+def _limited(receive: Receive, limit: int) -> Receive:
+    """`receive`, but a body that grows past `limit` bytes raises RequestTooLargeError."""
+    received = 0
+
+    async def receive_limited() -> Message:
+        nonlocal received
+        message = await receive()
+        if message["type"] == "http.request":
+            received += len(message.get("body", b""))
+            if received > limit:
+                raise RequestTooLargeError(limit)
+        return message
+
+    return receive_limited
 
 
 def _request_id_from(scope: Scope) -> str:

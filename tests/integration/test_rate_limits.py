@@ -10,7 +10,7 @@ from prometheus_client import REGISTRY
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from api.ratelimit import Decision, RateLimiter
+from api.limiter import Decision, RateLimiter
 from shared.clients import Clients
 from shared.config import Settings
 from shared.db.models import Tenant, TenantPlan
@@ -112,6 +112,51 @@ async def test_too_many_logins_for_one_email_get_429(limited_api: AsyncClient) -
     assert right.status_code == 429  # even the right password waits, so guessing stops
     assert int(right.headers["Retry-After"]) >= 1
     await sign_up(limited_api, "other@example.com", tenant_name="Other")  # its own limit
+
+
+async def test_too_many_sign_ups_from_one_ip_address_get_429(limited_settings: Settings) -> None:
+    settings = limited_settings.model_copy(update={"signups_per_ip_per_minute": 2})
+    async with chat_client(settings) as client:
+        responses = [
+            await client.post(
+                "/v1/auth/signup",
+                json={"tenant_name": f"T{n}", "email": f"u{n}@example.com", "password": PASSWORD},
+            )
+            for n in range(3)
+        ]
+
+    assert [response.status_code for response in responses] == [201, 201, 429]
+
+
+async def test_too_many_logins_from_one_ip_address_get_429(limited_settings: Settings) -> None:
+    # Different emails, so the limit per email never stops this guessing; the IP limit does.
+    settings = limited_settings.model_copy(update={"login_attempts_per_ip_per_minute": 3})
+    async with chat_client(settings) as client:
+        responses = [
+            await client.post(
+                "/v1/auth/login", json={"email": f"guess{n}@example.com", "password": "nope"}
+            )
+            for n in range(4)
+        ]
+
+    assert [response.status_code for response in responses] == [401, 401, 401, 429]
+
+
+async def test_too_many_wrong_keys_from_one_ip_address_get_429(limited_settings: Settings) -> None:
+    settings = limited_settings.model_copy(
+        update={"auth_failures_per_ip_per_minute": 3, "rate_limit_free_requests": 100}
+    )
+    async with chat_client(settings) as client:
+        owner = await sign_up(client, "owner@example.com")
+        key = await create_key(client, owner, name="ok")
+        wrong = [
+            await client.get("/v1/documents", headers=bearer(f"rf_live_wrong{n}")) for n in range(4)
+        ]
+        right = await client.get("/v1/documents", headers=bearer(key["key"]))
+
+    assert [response.status_code for response in wrong] == [401, 401, 401, 429]
+    assert wrong[-1].json()["error"]["code"] == "rate_limited"
+    assert right.status_code == 200  # only failures count: good keys are not slowed down
 
 
 async def test_pro_tenants_get_higher_limits(

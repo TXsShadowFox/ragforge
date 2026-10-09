@@ -4,7 +4,9 @@
    - by meaning: Qdrant compares the question's vector with the chunks' vectors
    - by words: Postgres full-text search (good for names, codes and numbers)
 2. Merge the two ranked lists with Reciprocal Rank Fusion (RRF).
-3. Keep chunks of "ready" documents, rerank them, and drop the ones that are not relevant.
+3. Keep chunks of "ready" documents, rerank the best RERANK_CANDIDATES of them, and keep
+   the relevant ones (pick_sources). The reranker is the slowest step, so only
+   RERANK_CONCURRENCY runs happen at the same time; other questions wait their turn.
 """
 
 import asyncio
@@ -83,8 +85,13 @@ async def find_sources(
             logger.info("Search found no chunks")
             return []
         # The database connection is back in the pool before the slow reranking starts.
-        ranked = await rerank(query, candidates, ai)
-        relevant = [source for source in ranked[:keep] if source.score >= settings.min_rerank_score]
+        ranked = await rerank(query, candidates[: settings.rerank_candidates], ai)
+        relevant = pick_sources(
+            ranked,
+            keep,
+            min_score=settings.min_rerank_score,
+            margin=settings.source_score_margin,
+        )
         current.set_attribute("retrieval.candidates", len(candidates))
         current.set_attribute("retrieval.relevant", len(relevant))
     logger.info(
@@ -93,6 +100,22 @@ async def find_sources(
         extra={"candidates": len(candidates), "best_score": round(ranked[0].score, 2)},
     )
     return relevant
+
+
+def pick_sources(
+    ranked: Sequence[Source], keep: int, *, min_score: float, margin: float
+) -> list[Source]:
+    """The sources for the LLM, from the reranked chunks (best first): at most `keep`,
+    each scoring at least `min_score` (MIN_RERANK_SCORE) and at most `margin` below the
+    best one (SOURCE_SCORE_MARGIN). Empty: nothing is relevant ("I don't know").
+
+    The margin keeps weak chunks out of the prompt (fewer tokens): in the evaluation the
+    chunk with the answer always scored within 0.1 of the best one.
+    """
+    if not ranked:
+        return []
+    floor = max(min_score, ranked[0].score - margin)
+    return [source for source in ranked[:keep] if source.score >= floor]
 
 
 async def search_candidates(
@@ -131,13 +154,28 @@ async def search_candidates(
 
 async def rerank(query: str, sources: Sequence[Source], ai: AIServices) -> list[Source]:
     """Step 3: the chunks sorted by the reranker's score (best first), with the score."""
+    texts = [source.text for source in sources]
+    with (
+        span("retrieval.rerank_wait"),
+        metrics.timer(metrics.RETRIEVAL_DURATION, step="rerank_wait"),
+    ):
+        await ai.rerank_slots.acquire()
     with (
         span("retrieval.rerank", chunks=len(sources)),
         metrics.timer(metrics.RETRIEVAL_DURATION, step="rerank"),
     ):
-        scores = await asyncio.to_thread(ai.reranker.rerank, query, [s.text for s in sources])
+        scores = await _run_in_slot(ai, query, texts)
     ranked = sorted(zip(sources, scores, strict=True), key=lambda pair: pair[1], reverse=True)
     return [dataclasses.replace(source, score=score) for source, score in ranked]
+
+
+async def _run_in_slot(ai: AIServices, query: str, texts: list[str]) -> list[float]:
+    """Run the reranker in a thread; give the (already taken) slot back when the thread is
+    done. A thread cannot be stopped: if the request is cancelled, the run still finishes,
+    and until then it keeps its slot, so the limit always holds."""
+    run = asyncio.ensure_future(asyncio.to_thread(ai.reranker.rerank, query, texts))
+    run.add_done_callback(lambda _: ai.rerank_slots.release())
+    return await asyncio.shield(run)
 
 
 async def _measured[T](step: str, work: Awaitable[T]) -> T:

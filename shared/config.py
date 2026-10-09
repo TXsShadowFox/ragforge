@@ -39,6 +39,11 @@ class Settings(BaseSettings):
 
     # --- PostgreSQL: main database ---
     database_url: PostgresDsn
+    # Connections per process: kept open, extra ones under load, and how long a request
+    # waits for one before it fails.
+    db_pool_size: PositiveInt = 5
+    db_max_overflow: int = Field(default=10, ge=0)
+    db_pool_timeout_seconds: PositiveFloat = 30.0
 
     # --- Redis: cache and rate limits ---
     redis_url: RedisDsn
@@ -63,8 +68,10 @@ class Settings(BaseSettings):
     jwt_secret: SecretStr = Field(min_length=32)
     jwt_expire_minutes: int = Field(default=60, ge=1, le=24 * 60)
 
-    # --- Documents and ingestion ---
+    # --- Requests and documents ---
     max_upload_mb: PositiveInt = 25
+    # Any other request body (JSON) may be at most this big; bigger ones get 413 at once.
+    max_request_kb: PositiveInt = 1024
     chunk_size_tokens: int = Field(default=500, ge=50)
     chunk_overlap_tokens: int = Field(default=50, ge=0)
     embedding_model: str = "BAAI/bge-small-en-v1.5"
@@ -87,11 +94,22 @@ class Settings(BaseSettings):
 
     # --- Search and chat ---
     rerank_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
-    search_candidates: int = Field(default=20, ge=1, le=100)  # from each search, then reranked
+    search_candidates: int = Field(default=20, ge=1, le=100)  # from each search, then fused
+    # The reranker scores only the best of the fused candidates: it is the slowest step
+    # (loadtests/RESULTS.md), and the evaluation found no loss with 10 (eval/RESULTS.md).
+    rerank_candidates: int = Field(default=10, ge=1, le=100)
+    # Reranker runs at the same time in one API process; more questions wait their turn.
+    # Each run needs ~0.2 GB for 10 long chunks: without a limit, 10 users at once ran
+    # the API out of memory.
+    rerank_concurrency: PositiveInt = 2
     # Below this reranker score a chunk is "not relevant". Measured for the default reranker
     # (make eval): off-topic questions scored -11.0 to -11.1, answerable ones -9.7 to 6.7
     # (CLAUDE.md, D33). On-topic questions without an answer are left to the LLM.
     min_rerank_score: float = -10.0
+    # A source must also score at most this much below the best one (the reranker's
+    # scale): weaker chunks only cost tokens. Measured (make eval): with 5, an answer gets
+    # 1.7 sources instead of 3.4, and no question lost the chunk with its answer.
+    source_score_margin: PositiveFloat = 5.0
     chat_history_messages: int = Field(default=6, ge=0, le=50)
 
     # --- Answer cache ---
@@ -107,6 +125,11 @@ class Settings(BaseSettings):
     rate_limit_pro_requests: PositiveInt = 600
     rate_limit_pro_questions: PositiveInt = 100
     login_attempts_per_minute: PositiveInt = 5
+    # Per IP address: logins (any email), sign-ups, and requests with a wrong API key or
+    # login token (after that, 429 instead of 401).
+    login_attempts_per_ip_per_minute: PositiveInt = 30
+    signups_per_ip_per_minute: PositiveInt = 5
+    auth_failures_per_ip_per_minute: PositiveInt = 30
     # Questions per minute from one widget visitor (IP address) with a public key. The
     # key's own limit (the whole website's) applies too.
     rate_limit_visitor_questions: PositiveInt = 5

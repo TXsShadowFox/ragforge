@@ -14,8 +14,7 @@ from api.auth.passwords import hash_password, needs_rehash, verify_dummy_passwor
 from api.auth.tokens import create_access_token
 from api.dependencies import SessionDep, SettingsDep
 from api.errors import ApiError, unauthorized
-from api.ratelimit import RateLimiterDep, too_many_requests
-from shared import metrics
+from api.limiter import ClientIpDep, RateLimiterDep, enforce
 from shared.db.models import Tenant, User, UserRole
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
@@ -46,8 +45,16 @@ class TokenResponse(BaseModel):
 
 
 @router.post("/signup", status_code=status.HTTP_201_CREATED)
-async def signup(body: SignupRequest, session: SessionDep) -> SignupResponse:
+async def signup(
+    body: SignupRequest,
+    session: SessionDep,
+    settings: SettingsDep,
+    limiter: RateLimiterDep,
+    ip: ClientIpDep,
+) -> SignupResponse:
     """Create a new tenant (your company) and its owner user."""
+    # Per IP address, before the slow password hash: a script cannot create many tenants.
+    await enforce(limiter, f"signup:{ip}", settings.signups_per_ip_per_minute, name="signup")
     password_hash = await asyncio.to_thread(hash_password, body.password)
     tenant = Tenant(name=body.tenant_name)
     session.add(tenant)
@@ -70,16 +77,21 @@ async def signup(body: SignupRequest, session: SessionDep) -> SignupResponse:
 
 @router.post("/login")
 async def login(
-    body: LoginRequest, session: SessionDep, settings: SettingsDep, limiter: RateLimiterDep
+    body: LoginRequest,
+    session: SessionDep,
+    settings: SettingsDep,
+    limiter: RateLimiterDep,
+    ip: ClientIpDep,
 ) -> TokenResponse:
     """Check the email and password, and return a login token for the dashboard."""
     email = _normalize_email(body.email)
-    # Limit tries per email before the (slow) password check: stops password guessing,
+    # Two limits before the (slow) password check: per IP address (many emails from one
+    # place) and per email (one account from many places). They stop password guessing,
     # and too many tries cannot keep the CPU busy with argon2.
-    decision = await limiter.hit(f"login:{email}", settings.login_attempts_per_minute)
-    if decision is not None and not decision.allowed:
-        metrics.RATE_LIMITED.labels(limit="login").inc()
-        raise too_many_requests(decision)
+    await enforce(
+        limiter, f"login_ip:{ip}", settings.login_attempts_per_ip_per_minute, name="login_ip"
+    )
+    await enforce(limiter, f"login:{email}", settings.login_attempts_per_minute, name="login")
     user = await session.scalar(select(User).where(User.email == email))
     if user is None:
         await asyncio.to_thread(verify_dummy_password, body.password)

@@ -1,6 +1,7 @@
 /**
  * Phase 5's goal, in a real browser: upload a file in the dashboard, then chat with it
- * from another website through the widget. Needs `make up` and the Groq key (one question).
+ * from another website through the widget. Needs the running stack: `make up` with the Groq
+ * key (one question), or the stack with the fake LLM (CI does that).
  */
 import { expect, test } from "@playwright/test";
 

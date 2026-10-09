@@ -43,8 +43,8 @@ Both are read when the server starts, so one Docker image works everywhere.
 
 ## Checks
 
-| Command                                                       | What it does                                                                              |
-| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `npm test`                                                    | unit tests (Vitest): the proxy, the cookie, page redirects, the stream reader, the widget |
-| `npm run e2e`                                                 | the whole flow in a real browser (Playwright): needs `make up` and the Groq key           |
-| `npm run lint` / `npm run typecheck` / `npm run format:check` | ESLint / TypeScript / Prettier                                                            |
+| Command                                                       | What it does                                                                                                                                              |
+| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm test`                                                    | unit tests (Vitest): the proxy, the cookie, page redirects, the stream reader, the widget, the security headers                                           |
+| `npm run e2e`                                                 | the whole flow in a real browser (Playwright): needs `make up` and the Groq key, or the stack with the fake LLM (`docker-compose.fake-llm.yml`, as in CI) |
+| `npm run lint` / `npm run typecheck` / `npm run format:check` | ESLint / TypeScript / Prettier                                                                                                                            |

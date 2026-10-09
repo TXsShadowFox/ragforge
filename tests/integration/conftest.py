@@ -53,6 +53,9 @@ HIGH_RATE_LIMITS: dict[str, Any] = {
     "rate_limit_pro_requests": 100_000,
     "rate_limit_pro_questions": 100_000,
     "login_attempts_per_minute": 100_000,
+    "login_attempts_per_ip_per_minute": 100_000,
+    "signups_per_ip_per_minute": 100_000,
+    "auth_failures_per_ip_per_minute": 100_000,
 }
 
 

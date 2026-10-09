@@ -9,9 +9,11 @@ COMPOSE = docker compose
 PY = uv run python -m
 NPM = npm --prefix frontend
 DATA_SERVICES = postgres redis rabbitmq qdrant rustfs
+# The stack with a fake LLM, for the load tests and the browser test in CI.
+LOADTEST = $(COMPOSE) -f docker-compose.yml -f docker-compose.fake-llm.yml
 
 .DEFAULT_GOAL := help
-.PHONY: help setup up down dev worker frontend widget-demo migrate logs ps test test-unit e2e eval lint fmt
+.PHONY: help setup up down dev worker frontend widget-demo migrate logs ps test test-unit e2e eval loadtest lint fmt
 
 help:
 	@echo Commands:
@@ -29,6 +31,7 @@ help:
 	@echo   make test-unit - run only the fast unit tests, no Docker needed
 	@echo   make e2e       - browser test of the whole flow, needs make up and the Groq key
 	@echo   make eval      - measure search and answer quality into eval/RESULTS.md, Docker and Groq
+	@echo   make loadtest  - k6 load tests against the stack with a fake LLM, into loadtests/results
 	@echo   make lint      - check style and types: ruff, mypy, eslint, prettier, tsc
 	@echo   make fmt       - auto-format and auto-fix the code
 
@@ -46,7 +49,7 @@ up: .env
 	$(COMPOSE) up -d --build --wait
 
 down:
-	$(COMPOSE) down
+	$(COMPOSE) down --remove-orphans
 
 dev: .env
 	$(COMPOSE) up -d --wait $(DATA_SERVICES)
@@ -84,6 +87,12 @@ e2e:
 
 eval:
 	$(PY) eval.run
+
+loadtest: .env
+	$(LOADTEST) up -d --build --wait api worker prometheus
+	$(LOADTEST) run --rm k6 run chat_cached.js
+	$(LOADTEST) run --rm k6 run chat_uncached.js
+	$(LOADTEST) run --rm k6 run upload.js
 
 lint:
 	$(PY) ruff check .

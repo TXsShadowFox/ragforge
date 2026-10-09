@@ -1,0 +1,67 @@
+# The stack with a fake LLM instead of Groq: for the load tests (`make loadtest`) and the
+# browser test in CI. Use it on top of docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.fake-llm.yml up -d --wait api
+#
+# - fake-llm answers like an OpenAI-compatible API after a fixed delay
+#   (loadtests/fake_llm.py). No key and no quota, so a load test measures RAGForge itself.
+# - The rate limits are raised: a load test measures the API, not its limits.
+# - The semantic cache is off (threshold 1.0): only exact repeats are cache hits, so the
+#   "uncached" load test really runs the whole RAG path for every question.
+# - No traces (Jaeger is not started).
+
+services:
+  fake-llm:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile
+    image: ragforge-app:dev  # the app's image already has Starlette and uvicorn
+    command:
+      - python
+      - -m
+      - uvicorn
+      - loadtests.fake_llm:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --no-access-log
+    volumes:
+      - ./loadtests:/app/loadtests:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2)
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    environment:
+      LLM_BASE_URL: http://fake-llm:8080/v1
+      LLM_MODEL: fake-llm
+      LLM_API_KEY: fake-key  # never the real key: it stays in .env for the normal stack
+      LLM_PRICE_INPUT_PER_MILLION: "0"
+      LLM_PRICE_OUTPUT_PER_MILLION: "0"
+      RATE_LIMIT_FREE_REQUESTS: "1000000"
+      RATE_LIMIT_FREE_QUESTIONS: "1000000"
+      SEMANTIC_CACHE_THRESHOLD: "1.0"
+      OTLP_TRACES_ENDPOINT: ""
+    depends_on:
+      fake-llm:
+        condition: service_healthy
+
+  worker:
+    environment:
+      OTLP_TRACES_ENDPOINT: ""
+
+  k6:
+    image: grafana/k6:2.3.0
+    profiles: ["loadtest"]  # never started by `up`: `docker compose run --rm k6 run ...`
+    working_dir: /scripts  # so commands name a script without a path (Git Bash rewrites paths)
+    environment:
+      API_URL: http://api:8000
+    volumes:
+      - ./loadtests:/scripts  # the scripts; results are written to loadtests/results/
+      - ./eval/corpus:/corpus:ro  # the evaluation's sample documents

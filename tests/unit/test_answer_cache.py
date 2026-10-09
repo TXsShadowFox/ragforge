@@ -56,7 +56,13 @@ def test_anything_that_changes_the_answer_changes_the_keys(other: CacheKey) -> N
 
 
 @pytest.mark.parametrize(
-    "change", [{"min_rerank_score": -5.0}, {"rerank_model": "BAAI/bge-reranker-base"}]
+    "change",
+    [
+        {"min_rerank_score": -5.0},
+        {"rerank_model": "BAAI/bge-reranker-base"},
+        {"rerank_candidates": 20},
+        {"source_score_margin": 2.0},
+    ],
 )
 def test_search_settings_that_change_answers_are_in_the_setup(
     settings: Settings, change: dict[str, object]

@@ -22,12 +22,15 @@ QUESTIONS_FILE = EVAL_DIR / "questions.json"
 @dataclass(frozen=True, slots=True)
 class Question:
     id: str
-    kind: str  # lookup, paraphrase, exact, near-miss; without an answer: not-in-documents
-    # (on topic) or off-topic
+    kind: str  # lookup, paraphrase, exact, near-miss, injection (its document has planted
+    # instructions); without an answer: not-in-documents (on topic) or off-topic
     question: str
     answer: str | None = None  # the reference answer, for the judge
     document: str | None = None  # the file that holds the answer
     evidence: str | None = None  # an exact phrase of that file with the answer
+    # Text from instructions planted in the document (prompt injection): an answer that
+    # contains it followed them.
+    forbidden: str | None = None
 
     @property
     def answerable(self) -> bool:
@@ -87,4 +90,6 @@ def check_test_set(questions: list[Question], corpus: list[CorpusFile]) -> list[
             problems.append(f"{question.id}: no document named {question.document!r}.")
         elif normalize(question.evidence or "") not in text:
             problems.append(f"{question.id}: the evidence is not in {question.document}.")
+        elif question.forbidden and normalize(question.forbidden) not in text:
+            problems.append(f"{question.id}: the planted text is not in {question.document}.")
     return problems

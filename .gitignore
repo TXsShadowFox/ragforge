@@ -31,3 +31,7 @@ node_modules/
 *.swp
 .DS_Store
 Thumbs.db
+
+# Load test results: raw k6 numbers (the summary goes into loadtests/RESULTS.md)
+loadtests/results/*
+!loadtests/results/.gitkeep
