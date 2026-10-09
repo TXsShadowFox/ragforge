@@ -35,3 +35,6 @@ Thumbs.db
 # Load test results: raw k6 numbers (the summary goes into loadtests/RESULTS.md)
 loadtests/results/*
 !loadtests/results/.gitkeep
+
+# The public demo's key, written on the server by deploy/seed_demo.py
+deploy/demo-config.js

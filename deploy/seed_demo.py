@@ -7,7 +7,8 @@ and a public key for the widget demo site. deploy/setup.sh runs it after each st
 The demo account comes from DEMO_EMAIL and DEMO_PASSWORD (setup.sh keeps them in .env).
 It uses only Python's standard library, as the server has none of the project's packages.
 Safe to run again: the tenant is reused, the same files are duplicates (nothing new), and
-the old demo key is revoked before a new one is made. It prints the demo link.
+the old demo key is revoked before a new one is made. The new key goes into
+deploy/demo-config.js, which the demo site loads, so its link never changes.
 """
 
 import argparse
@@ -23,6 +24,8 @@ from pathlib import Path
 from typing import Any
 
 CORPUS = Path(__file__).resolve().parents[1] / "eval" / "corpus"
+# Served by Caddy as the demo site's demo-config.js (docker-compose.prod.yml mounts it).
+DEMO_CONFIG = Path(__file__).resolve().parent / "demo-config.js"
 KEY_NAME = "Widget demo"
 TENANT_NAME = "Northfield College (demo)"
 WAIT_SECONDS = 300
@@ -137,6 +140,14 @@ def new_demo_key(api: Api, demo_site: str) -> str:
     return str(created["key"])
 
 
+def write_demo_config(key: str, api_url: str) -> None:
+    """The demo site's key and API address. Written in place: the file is bind-mounted, and a
+    new file (a new inode) would not reach the container."""
+    config = json.dumps({"key": key, "api": api_url})
+    with DEMO_CONFIG.open("w", encoding="utf-8", newline="\n") as file:
+        file.write(f"window.RAGFORGE_DEMO = {config};\n")
+
+
 def wait_until_ready(api: Api, count: int) -> None:
     deadline = time.monotonic() + WAIT_SECONDS
     while True:
@@ -169,9 +180,10 @@ def main() -> None:
     log_in(api, email, password)
     count = upload_corpus(api)
     key = new_demo_key(api, args.demo_site.rstrip("/"))
+    write_demo_config(key, api.base_url)
     wait_until_ready(api, count)
     print(f"Demo ready: {count} documents.")
-    print(f"Widget demo: {args.demo_site.rstrip('/')}/?key={key}&api={api.base_url}")
+    print(f"Widget demo: {args.demo_site.rstrip('/')}/")
     print(f"Dashboard:   {api.base_url}/")
 
 

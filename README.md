@@ -14,6 +14,20 @@ gets:
 It is a portfolio project about system design, backend engineering and RAG quality: every
 claim below comes from a test, the evaluation or a load test in this repository.
 
+## Live demo
+
+- **The widget on a "customer website":** https://demo.52.64.149.103.sslip.io (ask about the
+  sample college: fees, exams, the library, the residence halls, the snack bar...)
+- **The dashboard:** https://ragforge.52.64.149.103.sslip.io (sign up, upload your own
+  documents, create keys, chat; demo limits: 20 documents of up to 5 MB)
+- **The API docs:** https://ragforge.52.64.149.103.sslip.io/docs
+- **Live metrics (Grafana, read-only):** https://grafana.52.64.149.103.sslip.io
+
+It runs on one AWS EC2 server (2 vCPUs, 8 GB) with the production setup in this repository
+([docs/DEPLOY.md](docs/DEPLOY.md)), paid by AWS's starter credit, so it stays online for a few
+months. The LLM is Groq's free tier: when its daily quota is used up, answers say "busy" until
+the next day.
+
 ## Screenshots
 
 | Chat playground: answers with sources, follow-up questions | The widget on another website |

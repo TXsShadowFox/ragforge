@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# Install and start RAGForge on an Ubuntu 24.04 server (docs/DEPLOY.md), for example
-# Oracle Cloud's Always Free ARM VM. Run it from the repository, as a user with sudo:
+# Install and start RAGForge on an Ubuntu 24.04 server (docs/DEPLOY.md), for example an
+# AWS EC2 instance or Oracle Cloud's Always Free ARM VM. Run it from the repository, as a
+# user with sudo:
 #
 #   git clone https://github.com/TXsShadowFox/ragforge.git && cd ragforge && ./deploy/setup.sh
 #
-# The first time it asks for the server's public IP address and the Groq API key, and
-# writes .env with random passwords. Run it again after `git pull` to update: it keeps
-# .env, rebuilds the images and restarts what changed.
+# The first time it asks for the server's public IP address and the Groq API key (or reads
+# them from RAGFORGE_IP and GROQ_API_KEY, to run without questions), and writes .env with
+# random passwords. Run it again after `git pull` to update: it keeps .env, rebuilds the
+# images and restarts what changed.
 set -euo pipefail
+trap 'echo "deploy/setup.sh stopped with an error at line $LINENO" >&2' ERR
 cd "$(dirname "$0")/.."
 
 COMPOSE=(sudo docker compose -f docker-compose.yml -f docker-compose.prod.yml)
@@ -62,12 +65,20 @@ write_env() {
     echo "Keeping the existing .env"
     return
   fi
-  local ip answer groq_key
-  ip=$(curl -4 -fsS https://ifconfig.me || true)
-  read -r -p "The server's public IP address [${ip}]: " answer
-  ip=${answer:-$ip}
-  read -r -s -p "Groq API key (gsk_..., from https://console.groq.com/keys): " groq_key
-  echo
+  local ip=${RAGFORGE_IP:-} groq_key=${GROQ_API_KEY:-} answer
+  if [[ -z "$ip" ]]; then
+    ip=$(curl -4 -fsS https://ifconfig.me || true)
+    read -r -p "The server's public IP address [${ip}]: " answer
+    ip=${answer:-$ip}
+  fi
+  if [[ -z "$groq_key" ]]; then
+    read -r -s -p "Groq API key (gsk_..., from https://console.groq.com/keys): " groq_key || true
+    echo
+  fi
+  if [[ -z "$groq_key" ]]; then
+    echo "No Groq API key: type it when asked, or set GROQ_API_KEY." >&2
+    exit 1
+  fi
   cp .env.example .env
   chmod 600 .env
   set_value APP_ENV prod
@@ -90,8 +101,15 @@ main() {
   install_docker
   open_firewall
   write_env
-  echo "Building and starting everything (the first time ~15 minutes on 2 ARM CPUs)"
+  # The demo site's config (seed_demo.py fills it). It must exist before the start, or
+  # Docker would mount a new, empty folder in its place.
+  touch deploy/demo-config.js
+  echo "Building and starting everything (the first time ~10-15 minutes on 2 CPUs)"
   "${COMPOSE[@]}" up -d --build --wait --wait-timeout 1800
+  # Caddy gets the Caddyfile and the demo page as single-file mounts. `git pull` writes new
+  # files in their place, and a running container keeps the old ones: a restart reads the new
+  # ones (the certificates are kept in a volume).
+  "${COMPOSE[@]}" restart caddy
   DEMO_EMAIL=$(get_value DEMO_EMAIL) DEMO_PASSWORD=$(get_value DEMO_PASSWORD) \
     python3 deploy/seed_demo.py --api "https://$(get_value RAGFORGE_HOST)" \
     --demo-site "https://$(get_value DEMO_HOST)"

@@ -12,6 +12,10 @@ focus is system design, backend engineering and RAG quality, backed by tests and
 - Full spec: [PROJECT_SPEC.md](PROJECT_SPEC.md)
 - Progress checklist: [PROGRESS.md](PROGRESS.md)
 - Repo (public): https://github.com/TXsShadowFox/ragforge. CI runs on every push to `main` and on PRs.
+- Live demo (one AWS EC2 server, Sydney):
+  https://demo.52.64.149.103.sslip.io (widget), https://ragforge.52.64.149.103.sslip.io
+  (dashboard + API), https://grafana.52.64.149.103.sslip.io. Update it: `git pull &&
+  ./deploy/setup.sh` on the server.
 
 ## Working rules
 
@@ -44,7 +48,7 @@ from an **admin** PowerShell run `winget install -e --id Microsoft.WSL`, then
 | `make eval` | measure search and answer quality on sample documents, into `eval/RESULTS.md` (Docker + Groq; ~10 min; `uv run python -m eval.run --no-answers`: search only, ~2 min) |
 | `make lint` / `make fmt` | ruff, mypy, ESLint, Prettier, tsc / auto-format and auto-fix |
 | `make loadtest` | k6 load tests (chat cached / new questions, uploads) against the stack with a fake LLM (`docker-compose.fake-llm.yml`), into `loadtests/results/`; ~15 min. Then `make down` |
-| `./deploy/setup.sh` | on an Ubuntu server: Docker, firewall, `.env` with random passwords, the production stack (`docker-compose.prod.yml`, Caddy + HTTPS), the demo data. Steps: `docs/DEPLOY.md` |
+| `./deploy/setup.sh` | on an Ubuntu server: Docker, firewall, `.env` with random passwords, the production stack (`docker-compose.prod.yml`, Caddy + HTTPS), the demo data. Without questions: `RAGFORGE_IP=... GROQ_API_KEY=... ./deploy/setup.sh`. Steps: `docs/DEPLOY.md` |
 | `make logs` / `make ps` / `make down` | follow logs / container status / stop (data is kept) |
 
 | Local service | URL (logins are in `.env`) |
@@ -274,7 +278,7 @@ alembic.ini         only for the `alembic` command line (creating new migrations
 | D69 | Security headers. API: `nosniff`, `Referrer-Policy: no-referrer`, no framing (`X-Frame-Options`, `frame-ancestors 'none'`), `Cache-Control: no-store` unless a route sets its own. Dashboard: a CSP without nonces (`default-src 'self'`, `connect-src 'self'`, `script-src 'self' 'unsafe-inline'`, `object-src 'none'`, `frame-ancestors 'none'`) | Next.js nonces need every page rendered on the server and do not work with Cache Components (its docs). Without them scripts need 'unsafe-inline', but the page still talks only to its own server and loads nothing from elsewhere. |
 | D70 | Warm-up at startup with real sizes (the reranker scores 10 full-size texts) and one run of the /ready probes (a connection to each service) | First answer after a new image: 7.5 s without, 1.9 s with (after a plain restart both 1.5-1.9 s). |
 | D71 | CI's Docker job also runs the browser test: it builds both images (`load: true`), starts the stack with the fake LLM, and runs Playwright with Chromium | The whole flow (sign up, upload, key, widget answer) on every push, without a Groq key; it also catches a CSP that would break the dashboard. |
-| D72 | Deploy: one server, the whole stack with Docker Compose plus `docker-compose.prod.yml`; Caddy (automatic Let's Encrypt HTTPS) is the only public entry; sslip.io names (`ragforge.<ip>.sslip.io`) instead of a bought domain. The demo runs on Oracle Cloud's Always Free ARM VM (2 OCPUs, 12 GB) | Free with no time limit, and big enough (the stack uses ~2.4 GB with monitoring; all images support ARM). Checked in Oct 2026: Hugging Face Docker Spaces need a paid plan, the GitHub Student Pack's DigitalOcean credit ended, and Oracle cut the free ARM VM from 24 to 12 GB. The same files work on any Ubuntu server. |
+| D72 | Deploy: one server, the whole stack with Docker Compose plus `docker-compose.prod.yml`; Caddy (automatic Let's Encrypt HTTPS) is the only public entry; sslip.io names (`ragforge.<ip>.sslip.io`) instead of a bought domain. The demo runs on an AWS EC2 `m7i-flex.large` (2 vCPUs, 8 GB, Sydney) with a fixed Elastic IP, paid by the new-account credit on AWS's Free plan; Oracle Cloud's Always Free ARM VM (2 OCPUs, 12 GB) is the alternative that stays free | Big enough (the stack uses ~2.4 GB with monitoring) and simple (x86, no "out of capacity"). The Free plan never charges: after 6 months or when the $100-200 credit is used up (~$70-75 a month, estimate), AWS closes the account, and the same files move to Oracle or any Ubuntu server. Checked in Oct 2026: Hugging Face Docker Spaces need a paid plan, the GitHub Student Pack's DigitalOcean credit ended, and Oracle cut its free ARM VM from 24 to 12 GB. |
 | D73 | One address for the dashboard and the API (Caddy sends `/v1`, `/widget.js`, `/docs`, `/health` to the API, the rest to the dashboard), the widget demo site on its own address, and Grafana read-only for visitors (anonymous Viewer). `/metrics`, the databases, RabbitMQ and Jaeger stay inside Docker | One certificate for the main site; the demo site is a real other origin, as for a customer. Live metrics are part of the demo, without admin rights. |
 | D74 | Behind the proxy: uvicorn trusts `X-Forwarded-For` (`--proxy-headers --forwarded-allow-ips "*"`), and the dashboard's server passes the visitor's `X-Forwarded-For` on to the API | Only Caddy and the dashboard's server can reach the API, and Caddy ignores a visitor's own header, so it cannot be faked. Without it every visitor had the proxy's address: one shared login, sign-up and widget limit. Checked locally: the API saw the visitor (172.18.0.1), not the containers. |
 | D75 | Public demo: open sign-up with the usual limits, uploads up to 5 MB, at most 20 documents per tenant (`MAX_DOCUMENTS_PER_TENANT`, 403 `document_limit_reached`, a soft limit), and a demo tenant with the sample college documents plus a public key for the demo site (`deploy/seed_demo.py`: standard library only, safe to run again) | Visitors can try everything, while the disk and Groq's free quota (~1,000 requests a day) stay safe. The widget works without signing up. |
@@ -389,6 +393,23 @@ alembic.ini         only for the `alembic` command line (creating new migrations
 - A new eval document must not repeat a fact of another one with a different value: a
   "vegetarian thali" at 60 rupees (new) and 90 (campus services) gave one question two right
   answers, and the judge called the LLM's correct "60 [1] and 90 [2]" unfaithful. Grep first.
+- AWS key pairs belong to one region: a key imported in Mumbai does not exist for an instance in
+  Sydney, and SSH says `Permission denied (publickey)`. Fix without a new instance: console >
+  the instance > Connect > EC2 Instance Connect, and add the public key to
+  `~/.ssh/authorized_keys`.
+- The local `.env` may quote values (`LLM_API_KEY="gsk_..."`): pydantic and Compose accept it;
+  strip the quotes when you copy a value somewhere else.
+- In bash, `a && b && c &` sends the whole chain to the background, and a background job's
+  input is empty: `KEY="$(cat)" && ... && nohup ./deploy/setup.sh &` over SSH read no key.
+  Read it first, then start only the setup with `&` (`;` between them).
+- Smart App Control can start blocking a compiled file it allowed before (seen on 2026-10-09:
+  SQLAlchemy's `*_cy*.pyd`, "An Application Control policy has blocked this file"). SQLAlchemy
+  2.1 ships plain `.py` twins: moving the `.pyd` files aside (`.pyd.blocked`) makes it run in
+  plain Python; `uv sync --reinstall-package sqlalchemy` puts them back.
+- A single-file bind mount keeps the old file after `git pull` (git writes a new file in its
+  place), and `compose up` does not restart a container whose settings did not change:
+  `deploy/setup.sh` restarts Caddy so it reads the new Caddyfile and demo page. A file that
+  must change while mounted (demo-config.js) is rewritten in place, never replaced.
 - Oracle's Ubuntu images block every port but SSH in iptables, besides the network's security
   list: `deploy/setup.sh` opens 80/443 in iptables; the security list is a console step.
 - `ports: !reset []` (to drop a port of the main compose file) needs Docker Compose 2.24.4+.

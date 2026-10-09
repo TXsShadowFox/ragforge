@@ -93,11 +93,16 @@
     </form>
     <p id="status" role="status"></p>
 
+    <!-- On the public demo, deploy/seed_demo.py writes this file: the demo key and the API's
+         address, so the link needs no parameters. Elsewhere it is missing, and that is fine. -->
+    <script src="demo-config.js"></script>
     <script>
-      // Adds the widget's one script tag from ?key=...&api=..., the way a website would.
+      // Adds the widget's one script tag from ?key=...&api=... (or demo-config.js), the way a
+      // website would.
       const params = new URLSearchParams(location.search);
-      const key = params.get("key");
-      const api = (params.get("api") || "http://localhost:8000").replace(/\/+$/, "");
+      const demo = window.RAGFORGE_DEMO || {};
+      const key = params.get("key") || demo.key;
+      const api = (params.get("api") || demo.api || "http://localhost:8000").replace(/\/+$/, "");
       const form = document.getElementById("setup");
       form.elements.api.value = api;
       // This page's own address and the tag for it (textContent: text only, never HTML).

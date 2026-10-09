@@ -1,7 +1,6 @@
 # Caddy: the only public entry of the production stack (docker-compose.prod.yml).
 # It gets free HTTPS certificates (Let's Encrypt) for each address by itself.
 # The addresses come from .env: RAGFORGE_HOST, DEMO_HOST and GRAFANA_HOST.
-
 {
 	# Empty on a server. A local test sets CADDY_GLOBAL_OPTIONS=local_certs: Caddy then makes
 	# its own certificates, as Let's Encrypt cannot reach a laptop.
@@ -39,6 +38,9 @@
 # another site than the API.
 {$DEMO_HOST} {
 	import common
+	# seed_demo.py makes a new demo key each time it runs: browsers must check for a new
+	# demo-config.js (a short 304 when nothing changed), not keep one with a revoked key.
+	header Cache-Control "no-cache"
 	root * /srv/demo
 	try_files {path} /demo.html
 	file_server

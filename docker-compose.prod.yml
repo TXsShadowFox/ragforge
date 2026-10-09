@@ -32,6 +32,7 @@ services:
     volumes:
       - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./widget/demo.html:/srv/demo/demo.html:ro
+      - ./deploy/demo-config.js:/srv/demo/demo-config.js:ro  # the demo key (seed_demo.py)
       - caddy-data:/data  # the certificates: keep them, Let's Encrypt limits new ones
       - caddy-config:/config
     depends_on:

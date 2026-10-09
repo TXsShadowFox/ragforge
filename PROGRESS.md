@@ -129,7 +129,7 @@ Checklist of the phases in [PROJECT_SPEC.md](PROJECT_SPEC.md). Updated after eve
 - [x] CI runs the browser test on every push (the stack with the fake LLM, Chromium)
 - [x] Tests: Python 330 (222 unit + 108 integration), dashboard and widget 54 (Vitest), 1 end-to-end
 
-## Phase 8: Deploy + docs
+## Phase 8: Deploy + docs (done)
 
 - [x] Production setup (`docker-compose.prod.yml`): Caddy with automatic HTTPS as the only public
       entry; dashboard + API on one address, the widget demo site on its own, Grafana read-only;
@@ -139,19 +139,25 @@ Checklist of the phases in [PROJECT_SPEC.md](PROJECT_SPEC.md). Updated after eve
       per tenant (`MAX_DOCUMENTS_PER_TENANT`)
 - [x] Tested on this laptop with the same files (local certificates): routing, closed ports,
       HTTP -> HTTPS, seeding twice, a widget answer through Caddy, the visitor's IP in the limits
-- [ ] The public demo on Oracle Cloud's Always Free ARM VM: waiting for the VM
+- [x] The public demo on AWS EC2 (m7i-flex.large, 2 vCPUs, 8 GB, Sydney; AWS starter credit):
+      https://demo.52.64.149.103.sslip.io (widget), https://ragforge.52.64.149.103.sslip.io
+      (dashboard, API docs at /docs), https://grafana.52.64.149.103.sslip.io (metrics). Let's
+      Encrypt certificate, only ports 80/443 open; a live widget question answered in 2.2 s
+      with its source. Oracle Cloud's free VM is documented as the alternative
 - [x] Full README: the problem, screenshots, architecture (Mermaid), results, decisions and
       trade-offs, how to run, curl examples, future work
 - [x] `docs/SYSTEM_DESIGN.md`: scaling to 1,000 tenants and 10M chunks; `docs/DEPLOY.md`
 - [x] CI checks the production compose file and the Caddyfile
+- [x] Tests: Python 333 (224 unit + 109 integration), dashboard and widget 56 (Vitest), 1 end-to-end
 
 ## Final deliverables
 
-- [ ] All phases done, tests passing, CI green
-- [ ] Tenant isolation proven by tests
+- [x] All phases done, tests passing, CI green
+- [x] Tenant isolation proven by tests
 - [x] Eval report with numbers
 - [x] Load test report with before/after numbers
 - [x] Grafana dashboard
-- [ ] README + SYSTEM_DESIGN.md + architecture diagram
-- [ ] Live demo link
-- [ ] Resume bullet points + 10 interview questions with answers
+- [x] README + SYSTEM_DESIGN.md + architecture diagram
+- [x] Live demo link
+- [x] Resume bullet points + 10 interview questions with answers (given privately, not in
+      the repo)
