@@ -70,6 +70,8 @@ class Settings(BaseSettings):
 
     # --- Requests and documents ---
     max_upload_mb: PositiveInt = 25
+    # Documents one tenant may keep (empty: no limit). The public demo sets 20.
+    max_documents_per_tenant: PositiveInt | None = None
     # Any other request body (JSON) may be at most this big; bigger ones get 413 at once.
     max_request_kb: PositiveInt = 1024
     chunk_size_tokens: int = Field(default=500, ge=50)

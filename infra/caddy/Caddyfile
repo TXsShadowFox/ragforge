@@ -1,0 +1,51 @@
+# Caddy: the only public entry of the production stack (docker-compose.prod.yml).
+# It gets free HTTPS certificates (Let's Encrypt) for each address by itself.
+# The addresses come from .env: RAGFORGE_HOST, DEMO_HOST and GRAFANA_HOST.
+
+{
+	# Empty on a server. A local test sets CADDY_GLOBAL_OPTIONS=local_certs: Caddy then makes
+	# its own certificates, as Let's Encrypt cannot reach a laptop.
+	{$CADDY_GLOBAL_OPTIONS}
+}
+
+(common) {
+	header {
+		# Browsers use HTTPS for this site from now on, even if a link says http://.
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	log {
+		output stdout
+		format json
+	}
+}
+
+# The dashboard, and the API for programs and the chat widget. /metrics stays inside
+# Docker (Prometheus reads it there).
+{$RAGFORGE_HOST} {
+	import common
+	@api path /v1/* /widget.js /health /docs /docs/* /redoc /openapi.json
+	handle @api {
+		# Caddy sends the visitor's address in X-Forwarded-For (it ignores one sent by the
+		# visitor), and streamed answers go out piece by piece.
+		reverse_proxy api:8000
+	}
+	handle {
+		reverse_proxy frontend:3000
+	}
+}
+
+# The widget demo: a "customer website" on its own address, so the widget really runs on
+# another site than the API.
+{$DEMO_HOST} {
+	import common
+	root * /srv/demo
+	try_files {path} /demo.html
+	file_server
+}
+
+# Grafana: the live metrics, read-only for visitors (docker-compose.prod.yml).
+{$GRAFANA_HOST} {
+	import common
+	reverse_proxy grafana:3000
+}

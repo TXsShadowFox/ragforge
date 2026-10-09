@@ -1,7 +1,7 @@
 /** Sign up (a new company and its owner), then log in. */
 import type { NextRequest } from "next/server";
 
-import { apiUrl, errorResponse, logIn, readJsonObject, relay } from "@/lib/backend";
+import { apiUrl, errorResponse, forwardedFor, logIn, readJsonObject, relay } from "@/lib/backend";
 import { isSameOrigin } from "@/lib/session";
 
 export async function POST(request: NextRequest) {
@@ -16,7 +16,7 @@ export async function POST(request: NextRequest) {
   try {
     signup = await fetch(`${apiUrl()}/v1/auth/signup`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...forwardedFor(request) },
       body: JSON.stringify({
         tenant_name: body.tenant_name,
         email: body.email,

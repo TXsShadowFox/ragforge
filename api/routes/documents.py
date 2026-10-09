@@ -110,6 +110,7 @@ async def upload_document(
     existing = await _find_by_hash(session, principal.tenant_id, upload.sha256)
     if existing is not None:
         return _duplicate(existing, response)
+    await _check_document_limit(session, principal.tenant_id, settings.max_documents_per_tenant)
 
     # The ID comes first: it names the file in storage. (Postgres 18 makes uuidv7 IDs.)
     new_id = await session.execute(select(func.uuidv7(type_=Uuid())))
@@ -226,6 +227,27 @@ async def _read_upload(file: UploadFile, max_bytes: int) -> _ReadUpload:
     if size == 0:
         raise ApiError(status.HTTP_400_BAD_REQUEST, "empty_file", "The file is empty.")
     return _ReadUpload(size=size, sha256=digest.hexdigest(), head=head)
+
+
+async def _check_document_limit(
+    session: AsyncSession, tenant_id: uuid.UUID, limit: int | None
+) -> None:
+    """403 when the tenant already keeps `limit` documents (those being deleted do not
+    count). Two uploads at the same moment can both pass: a soft limit, enough to keep a
+    public demo's disk from filling up."""
+    if limit is None:
+        return
+    count = await session.scalar(
+        select(func.count())
+        .select_from(Document)
+        .where(Document.tenant_id == tenant_id, Document.status != DocumentStatus.DELETING)
+    )
+    if (count or 0) >= limit:
+        raise ApiError(
+            status.HTTP_403_FORBIDDEN,
+            "document_limit_reached",
+            f"This account can keep at most {limit} documents. Delete one to upload another.",
+        )
 
 
 async def _find_by_hash(

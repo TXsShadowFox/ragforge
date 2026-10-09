@@ -85,7 +85,7 @@ select = [
 python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
-files = ["api", "shared", "worker", "tests", "eval", "loadtests"]
+files = ["api", "shared", "worker", "tests", "eval", "loadtests", "deploy"]
 
 # -------------------------------------------------------------- pytest ----
 [tool.pytest.ini_options]

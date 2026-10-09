@@ -44,6 +44,7 @@ from an **admin** PowerShell run `winget install -e --id Microsoft.WSL`, then
 | `make eval` | measure search and answer quality on sample documents, into `eval/RESULTS.md` (Docker + Groq; ~10 min; `uv run python -m eval.run --no-answers`: search only, ~2 min) |
 | `make lint` / `make fmt` | ruff, mypy, ESLint, Prettier, tsc / auto-format and auto-fix |
 | `make loadtest` | k6 load tests (chat cached / new questions, uploads) against the stack with a fake LLM (`docker-compose.fake-llm.yml`), into `loadtests/results/`; ~15 min. Then `make down` |
+| `./deploy/setup.sh` | on an Ubuntu server: Docker, firewall, `.env` with random passwords, the production stack (`docker-compose.prod.yml`, Caddy + HTTPS), the demo data. Steps: `docs/DEPLOY.md` |
 | `make logs` / `make ps` / `make down` | follow logs / container status / stop (data is kept) |
 
 | Local service | URL (logins are in `.env`) |
@@ -113,6 +114,10 @@ eval/               the evaluation: corpus/ (6 sample documents, one with plante
 loadtests/          k6 scripts (chat_cached, chat_uncached, upload; lib.js), fake_llm.py (an
                     OpenAI-compatible LLM with a fixed delay), RESULTS.md
 docker-compose.fake-llm.yml   the stack with the fake LLM: load tests and CI's browser test
+docker-compose.prod.yml       production: Caddy in front (infra/caddy/Caddyfile), no other ports
+deploy/             setup.sh (an Ubuntu server, start to finish), seed_demo.py (the demo tenant;
+                    standard library only)
+docs/               DEPLOY.md, SYSTEM_DESIGN.md (1,000 tenants, 10M chunks), images/ (README)
 alembic.ini         only for the `alembic` command line (creating new migrations)
 ```
 
@@ -158,6 +163,8 @@ alembic.ini         only for the `alembic` command line (creating new migrations
   `<source>` tags (`answer_messages()`), which a document cannot close.
 - A new setting that changes answers (search, reranker, prompt) must go into `answer_setup()`
   (shared/answer_cache.py), or cached answers made without it are reused for 24 h.
+- A new public path of the API outside `/v1` must also go into the Caddyfile's `@api` matcher
+  (infra/caddy/Caddyfile); everything else goes to the dashboard in production.
 - Limits per IP address (logins, sign-ups, wrong keys) use `enforce()` and `client_ip()`
   from api/limiter.py; a new 429 reason also goes into `start_api_metrics()`.
 - Background work goes through the outbox: `add_job(session, Job(...))` in the same transaction
@@ -267,6 +274,11 @@ alembic.ini         only for the `alembic` command line (creating new migrations
 | D69 | Security headers. API: `nosniff`, `Referrer-Policy: no-referrer`, no framing (`X-Frame-Options`, `frame-ancestors 'none'`), `Cache-Control: no-store` unless a route sets its own. Dashboard: a CSP without nonces (`default-src 'self'`, `connect-src 'self'`, `script-src 'self' 'unsafe-inline'`, `object-src 'none'`, `frame-ancestors 'none'`) | Next.js nonces need every page rendered on the server and do not work with Cache Components (its docs). Without them scripts need 'unsafe-inline', but the page still talks only to its own server and loads nothing from elsewhere. |
 | D70 | Warm-up at startup with real sizes (the reranker scores 10 full-size texts) and one run of the /ready probes (a connection to each service) | First answer after a new image: 7.5 s without, 1.9 s with (after a plain restart both 1.5-1.9 s). |
 | D71 | CI's Docker job also runs the browser test: it builds both images (`load: true`), starts the stack with the fake LLM, and runs Playwright with Chromium | The whole flow (sign up, upload, key, widget answer) on every push, without a Groq key; it also catches a CSP that would break the dashboard. |
+| D72 | Deploy: one server, the whole stack with Docker Compose plus `docker-compose.prod.yml`; Caddy (automatic Let's Encrypt HTTPS) is the only public entry; sslip.io names (`ragforge.<ip>.sslip.io`) instead of a bought domain. The demo runs on Oracle Cloud's Always Free ARM VM (2 OCPUs, 12 GB) | Free with no time limit, and big enough (the stack uses ~2.4 GB with monitoring; all images support ARM). Checked in Oct 2026: Hugging Face Docker Spaces need a paid plan, the GitHub Student Pack's DigitalOcean credit ended, and Oracle cut the free ARM VM from 24 to 12 GB. The same files work on any Ubuntu server. |
+| D73 | One address for the dashboard and the API (Caddy sends `/v1`, `/widget.js`, `/docs`, `/health` to the API, the rest to the dashboard), the widget demo site on its own address, and Grafana read-only for visitors (anonymous Viewer). `/metrics`, the databases, RabbitMQ and Jaeger stay inside Docker | One certificate for the main site; the demo site is a real other origin, as for a customer. Live metrics are part of the demo, without admin rights. |
+| D74 | Behind the proxy: uvicorn trusts `X-Forwarded-For` (`--proxy-headers --forwarded-allow-ips "*"`), and the dashboard's server passes the visitor's `X-Forwarded-For` on to the API | Only Caddy and the dashboard's server can reach the API, and Caddy ignores a visitor's own header, so it cannot be faked. Without it every visitor had the proxy's address: one shared login, sign-up and widget limit. Checked locally: the API saw the visitor (172.18.0.1), not the containers. |
+| D75 | Public demo: open sign-up with the usual limits, uploads up to 5 MB, at most 20 documents per tenant (`MAX_DOCUMENTS_PER_TENANT`, 403 `document_limit_reached`, a soft limit), and a demo tenant with the sample college documents plus a public key for the demo site (`deploy/seed_demo.py`: standard library only, safe to run again) | Visitors can try everything, while the disk and Groq's free quota (~1,000 requests a day) stay safe. The widget works without signing up. |
+| D76 | Secrets on the server: `deploy/setup.sh` writes `.env` once (random passwords and JWT secret from `openssl`, mode 600) and asks for the Groq key; never in git. Updates: `git pull && ./deploy/setup.sh` | Nobody has to invent passwords, and running it again keeps them. |
 
 ## Gotchas
 
@@ -377,7 +389,19 @@ alembic.ini         only for the `alembic` command line (creating new migrations
 - A new eval document must not repeat a fact of another one with a different value: a
   "vegetarian thali" at 60 rupees (new) and 90 (campus services) gave one question two right
   answers, and the judge called the LLM's correct "60 [1] and 90 [2]" unfaithful. Grep first.
+- Oracle's Ubuntu images block every port but SSH in iptables, besides the network's security
+  list: `deploy/setup.sh` opens 80/443 in iptables; the security list is a console step.
+- `ports: !reset []` (to drop a port of the main compose file) needs Docker Compose 2.24.4+.
+  The YAML git hook runs with `--unsafe` (syntax only) because of that tag.
+- A literal `</script>` inside an inline script ends the script block: write `<\/script>`.
+- Let's Encrypt cannot reach a laptop: for a local test of the production files, set
+  `CADDY_GLOBAL_OPTIONS=local_certs` and use `*.127.0.0.1.sslip.io` names (Windows programs
+  do not resolve `*.localhost`). docs/DEPLOY.md has the commands.
+- Locally, the production files use the same Docker volumes as `make up` (same project name):
+  a local test leaves its tenants in the dev database.
 
-## Notes for later phases (from the spec review)
+## What could come next
 
-- Phase 8: every service address is already a setting, so free managed services can be plugged in. Capacity (loadtests/RESULTS.md): the reranker allows ~1.7 new answers a second per API process on the laptop, and one process ~55-70 cheap requests a second; more needs more CPU or copies (each ~1 GB of RAM with the models). On HTTPS: add HSTS and `upgrade-insecure-requests` to the CSP. Still open from Phase 6/7: compare MiniLM with bge-reranker-base (`make eval`), and a bigger eval corpus with look-alike documents (15 chunks are fewer than the 20 candidates of a search, so only hit@1 and MRR tell settings apart). Traces: point `OTLP_TRACES_ENDPOINT` at a managed OTLP backend and lower `TRACE_SAMPLE_RATIO`. Behind a proxy, run uvicorn with `--proxy-headers --forwarded-allow-ips`, or every widget visitor has the proxy's IP (one shared visitor limit). Set `PUBLIC_API_URL`; the dashboard cookie becomes Secure by itself on HTTPS. Serve `widget.js` from a CDN. Still missing: team members (invites), and public keys that answer from only some documents (today a public key answers from all of the tenant's documents).
+- Capacity (loadtests/RESULTS.md): the reranker allows ~1.7 new answers a second per API process on the laptop, one process ~55-70 cheap requests a second; next steps in docs/SYSTEM_DESIGN.md (an inference service on a GPU, PgBouncer, Qdrant quantization and sharding). Traces at scale: a managed OTLP backend and a lower `TRACE_SAMPLE_RATIO`. Serve `widget.js` from a CDN.
+- Product: team members (invites), public keys that answer from only some documents, monthly quotas per plan.
+- Evaluation: a bigger corpus with look-alike documents (15 chunks are fewer than the 20 candidates of a search, so only hit@1 and MRR tell settings apart), and MiniLM vs. bge-reranker-base.

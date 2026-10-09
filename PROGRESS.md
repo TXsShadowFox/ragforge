@@ -131,9 +131,19 @@ Checklist of the phases in [PROJECT_SPEC.md](PROJECT_SPEC.md). Updated after eve
 
 ## Phase 8: Deploy + docs
 
-- [ ] Production docker-compose or a free-tier deploy, with a public demo link
-- [ ] Full README: architecture (Mermaid), decisions, how to run, curl examples, results
-- [ ] `docs/SYSTEM_DESIGN.md`: scaling to 1,000 tenants and 10M chunks
+- [x] Production setup (`docker-compose.prod.yml`): Caddy with automatic HTTPS as the only public
+      entry; dashboard + API on one address, the widget demo site on its own, Grafana read-only;
+      real visitor addresses behind the proxy (also through the dashboard's server)
+- [x] `deploy/setup.sh` (an Ubuntu server, start to finish) and `deploy/seed_demo.py` (the demo
+      tenant with the sample documents and a public key); demo limits: 5 MB uploads, 20 documents
+      per tenant (`MAX_DOCUMENTS_PER_TENANT`)
+- [x] Tested on this laptop with the same files (local certificates): routing, closed ports,
+      HTTP -> HTTPS, seeding twice, a widget answer through Caddy, the visitor's IP in the limits
+- [ ] The public demo on Oracle Cloud's Always Free ARM VM: waiting for the VM
+- [x] Full README: the problem, screenshots, architecture (Mermaid), results, decisions and
+      trade-offs, how to run, curl examples, future work
+- [x] `docs/SYSTEM_DESIGN.md`: scaling to 1,000 tenants and 10M chunks; `docs/DEPLOY.md`
+- [x] CI checks the production compose file and the Caddyfile
 
 ## Final deliverables
 

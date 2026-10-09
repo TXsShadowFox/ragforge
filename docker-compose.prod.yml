@@ -1,0 +1,114 @@
+# Production: the whole stack on one server, behind Caddy (automatic HTTPS).
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build --wait
+# deploy/setup.sh writes .env and starts it; the steps are in docs/DEPLOY.md.
+#
+# - Only Caddy is open to the internet (ports 80 and 443). Databases, the queue and the
+#   admin pages are reachable only inside Docker.
+# - Addresses from .env: RAGFORGE_HOST (dashboard + API), DEMO_HOST (the widget demo site),
+#   GRAFANA_HOST (live metrics, read-only for visitors).
+# - Limits for a public demo: uploads up to 5 MB, 20 documents per tenant.
+
+x-production: &production
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  caddy:
+    <<: *production
+    image: caddy:2.11.7-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"  # HTTP/3
+    environment:
+      RAGFORGE_HOST: ${RAGFORGE_HOST:?Set RAGFORGE_HOST in .env}
+      DEMO_HOST: ${DEMO_HOST:?Set DEMO_HOST in .env}
+      GRAFANA_HOST: ${GRAFANA_HOST:?Set GRAFANA_HOST in .env}
+      CADDY_GLOBAL_OPTIONS: ${CADDY_GLOBAL_OPTIONS:-}  # local tests only: local_certs
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./widget/demo.html:/srv/demo/demo.html:ro
+      - caddy-data:/data  # the certificates: keep them, Let's Encrypt limits new ones
+      - caddy-config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+      grafana:
+        condition: service_healthy
+
+  # `!reset []`: no port of these services is published on the server.
+  postgres:
+    <<: *production
+    ports: !reset []
+  redis:
+    <<: *production
+    ports: !reset []
+  rabbitmq:
+    <<: *production
+    ports: !reset []
+  qdrant:
+    <<: *production
+    ports: !reset []
+  rustfs:
+    <<: *production
+    ports: !reset []
+  prometheus:
+    <<: *production
+    ports: !reset []
+  jaeger:
+    <<: *production
+    ports: !reset []
+
+  grafana:
+    <<: *production
+    ports: !reset []
+    environment:
+      GF_SERVER_ROOT_URL: https://${GRAFANA_HOST}
+      # Visitors see the dashboards without logging in, and cannot change anything.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/ragforge.json
+
+  api:
+    <<: *production
+    ports: !reset []
+    # --proxy-headers: the visitor's address comes from X-Forwarded-For. Safe here: only
+    # Caddy and the dashboard's server can reach the API, and Caddy ignores the header when
+    # a visitor sends it. Without it, every visitor would have Caddy's address.
+    command:
+      - uvicorn
+      - api.main:create_app_from_env
+      - --factory
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --no-access-log
+      - --proxy-headers
+      - --forwarded-allow-ips
+      - "*"
+    environment:
+      APP_ENV: prod
+      MAX_UPLOAD_MB: "5"
+      MAX_DOCUMENTS_PER_TENANT: "20"
+
+  worker:
+    <<: *production
+    environment:
+      APP_ENV: prod
+
+  frontend:
+    <<: *production
+    ports: !reset []
+    environment:
+      PUBLIC_API_URL: https://${RAGFORGE_HOST}
+
+volumes:
+  caddy-data:
+  caddy-config:

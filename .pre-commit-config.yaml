@@ -27,7 +27,9 @@ repos:
         types: [text]
       - id: check-yaml
         name: check yaml
-        entry: uv run python -m pre_commit_hooks.check_yaml
+        # --unsafe: syntax only, so Docker Compose's own tags (like `!reset`) are allowed.
+        # CI checks the compose files for real with `docker compose config`.
+        entry: uv run python -m pre_commit_hooks.check_yaml --unsafe
         language: unsupported
         types: [yaml]
       - id: check-toml

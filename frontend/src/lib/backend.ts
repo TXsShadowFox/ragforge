@@ -22,6 +22,16 @@ export function apiUrl(): string {
   return (process.env.API_URL ?? "http://localhost:8000").replace(/\/+$/, "");
 }
 
+/**
+ * The visitor's IP address, as the proxy in front (Caddy) reports it. The API needs it for
+ * its limits per IP address (logins, sign-ups); without it, every dashboard user would
+ * have this server's address. The API trusts it only behind that proxy.
+ */
+export function forwardedFor(request: NextRequest): Record<string, string> {
+  const value = request.headers.get("x-forwarded-for");
+  return value ? { "x-forwarded-for": value } : {};
+}
+
 /** An error in the API's format: {error: {code, message}}. */
 export function errorResponse(status: number, code: string, message: string): Response {
   return Response.json({ error: { code, message } }, { status });
@@ -42,7 +52,7 @@ export async function forwardToApi(request: NextRequest, segments: string[]): Pr
   if (!token) {
     return errorResponse(401, "not_logged_in", "Please log in.");
   }
-  const headers = new Headers({ authorization: `Bearer ${token}` });
+  const headers = new Headers({ authorization: `Bearer ${token}`, ...forwardedFor(request) });
   for (const name of ["content-type", "accept"]) {
     const value = request.headers.get(name);
     if (value) headers.set(name, value);
@@ -75,7 +85,7 @@ export async function logIn(
   try {
     upstream = await fetch(`${apiUrl()}/v1/auth/login`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...forwardedFor(request) },
       body: JSON.stringify(credentials),
       cache: "no-store",
     });

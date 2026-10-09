@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Acme College help center (RAGForge widget demo)</title>
+    <title>Northfield College help center (RAGForge widget demo)</title>
     <style>
       body {
         max-width: 720px;
@@ -67,19 +67,21 @@
     </style>
   </head>
   <body>
-    <h1>Acme College help center</h1>
+    <h1>Northfield College help center</h1>
     <p>
-      This page plays the part of a customer's website. It runs on its own address
-      (<code>http://localhost:5500</code>), not on the RAGForge API, like a real website.
+      This page plays the part of a customer's website. It runs on its own address (<code
+        class="this-site"
+        >http://localhost:5500</code
+      >), not on the RAGForge API, like a real website.
     </p>
     <p>A real website adds the chat with one tag:</p>
-    <pre><code>&lt;script src="http://localhost:8000/widget.js" data-api-key="rf_pub_..." async&gt;&lt;/script&gt;</code></pre>
+    <pre><code id="snippet">&lt;script src="http://localhost:8000/widget.js" data-api-key="rf_pub_..." async&gt;&lt;/script&gt;</code></pre>
 
     <form id="setup" method="get">
       <label>
         <span>
           Public key (create one in the dashboard, with
-          <code>http://localhost:5500</code> as an allowed origin)
+          <code class="this-site">http://localhost:5500</code> as an allowed origin)
         </span>
         <input name="key" placeholder="rf_pub_..." required autocomplete="off" />
       </label>
@@ -98,13 +100,20 @@
       const api = (params.get("api") || "http://localhost:8000").replace(/\/+$/, "");
       const form = document.getElementById("setup");
       form.elements.api.value = api;
+      // This page's own address and the tag for it (textContent: text only, never HTML).
+      // "<\/script>": a plain closing tag here would end this script block.
+      for (const element of document.querySelectorAll(".this-site")) {
+        element.textContent = location.origin;
+      }
+      document.getElementById("snippet").textContent =
+        `<script src="${api}/widget.js" data-api-key="${key || "rf_pub_..."}" async><\/script>`;
       if (key) {
         form.elements.key.value = key;
         const tag = document.createElement("script");
         tag.src = `${api}/widget.js`;
         tag.async = true;
         tag.dataset.apiKey = key;
-        tag.dataset.title = "Ask Acme College";
+        tag.dataset.title = "Ask Northfield College";
         tag.dataset.greeting = "Hi! Ask me about the college rules and services.";
         tag.addEventListener("error", () => {
           document.getElementById("status").textContent =

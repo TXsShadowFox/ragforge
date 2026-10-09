@@ -62,6 +62,19 @@ describe("the /api/v1 proxy", () => {
     expect(await response.json()).toEqual({ items: [] });
   });
 
+  it("tells the API the visitor's address, and nothing when there is none", async () => {
+    fetchMock.mockResolvedValue(Response.json({}));
+
+    await forwardToApi(
+      browserRequest("/api/v1/me", { headers: { "x-forwarded-for": "203.0.113.7" } }),
+      ["me"],
+    );
+    expect(new Headers(lastCall().init.headers).get("x-forwarded-for")).toBe("203.0.113.7");
+
+    await forwardToApi(browserRequest("/api/v1/me"), ["me"]);
+    expect(new Headers(lastCall().init.headers).has("x-forwarded-for")).toBe(false);
+  });
+
   it("streams an upload's body to the API", async () => {
     fetchMock.mockResolvedValue(Response.json({ duplicate: false }, { status: 202 }));
     const request = browserRequest("/api/v1/documents", {
@@ -198,6 +211,18 @@ describe("logging in", () => {
     const response = await logIn(request, credentials);
 
     expect(response.headers.get("set-cookie")).toMatch(/Secure/i);
+  });
+
+  it("tells the API the visitor's address, for its limits per IP address", async () => {
+    fetchMock.mockResolvedValue(Response.json({ access_token: "jwt", expires_in: 3600 }));
+    const request = browserRequest("/api/session", {
+      method: "POST",
+      headers: { "x-forwarded-for": "203.0.113.7" },
+    });
+
+    await logIn(request, credentials);
+
+    expect(new Headers(lastCall().init.headers).get("x-forwarded-for")).toBe("203.0.113.7");
   });
 
   it("passes a wrong password on as the API's 401", async () => {

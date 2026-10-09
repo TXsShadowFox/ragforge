@@ -82,11 +82,19 @@ jobs:
       COMPOSE: docker compose -f docker-compose.yml -f docker-compose.fake-llm.yml
     steps:
       - uses: actions/checkout@v7
-      - name: Validate docker-compose.yml
+      - name: Validate the compose files and the Caddyfile
+        env:
+          RAGFORGE_HOST: ragforge.example.com
+          DEMO_HOST: demo.example.com
+          GRAFANA_HOST: grafana.example.com
         run: |
           cp .env.example .env
           docker compose config --quiet
           $COMPOSE config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml config --quiet
+          docker run --rm -e RAGFORGE_HOST -e DEMO_HOST -e GRAFANA_HOST \
+            -v "$PWD/infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.11.7-alpine \
+            caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
       - uses: docker/setup-buildx-action@v4
       # `load: true`: the images go to the local Docker, for the browser test below.
       - name: Build the API image

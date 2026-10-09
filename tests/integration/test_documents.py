@@ -196,6 +196,29 @@ async def test_bad_uploads_are_refused(
     assert response.json()["error"]["code"] == code
 
 
+async def test_a_tenant_keeps_at_most_max_documents(clean_stack: Settings) -> None:
+    app = create_app(clean_stack.model_copy(update={"max_documents_per_tenant": 2}), ai=fake_ai())
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        owner = await sign_up(client, "owner@example.com")
+        first = await upload(client, owner, "a.txt", b"The first file.")
+        await upload(client, owner, "b.txt", b"The second file.")
+        third = await upload(client, owner, "c.txt", b"The third file.")
+        again = await upload(client, owner, "a.txt", b"The first file.")
+        deleted = await client.delete(
+            f"/v1/documents/{first.json()['document']['id']}", headers=owner.headers
+        )
+        after_delete = await upload(client, owner, "c.txt", b"The third file.")
+
+    assert third.status_code == 403
+    assert third.json()["error"]["code"] == "document_limit_reached"
+    assert again.status_code == 200  # a duplicate creates nothing, so it is allowed
+    assert deleted.status_code == 202
+    assert after_delete.status_code == 202  # a document being deleted does not count
+
+
 async def test_a_file_over_the_size_limit_is_refused(clean_stack: Settings) -> None:
     app = create_app(clean_stack.model_copy(update={"max_upload_mb": 1}), ai=fake_ai())
     async with (
